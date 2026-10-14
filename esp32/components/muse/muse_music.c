@@ -136,11 +136,14 @@ static void scan(void)
     portENTER_CRITICAL(&s_lock);
     s->status.count = 0; s->status.name[0] = 0;
     portEXIT_CRITICAL(&s_lock);
-    if (!s->status.mounted) {
+    {
         /* No fallback pin map: only the exact board may configure its card bus. */
         if (!muse_board->storage_mount) { error("SD WIRING NOT CONFIGURED"); return; }
         esp_err_t rc = muse_board->storage_mount("/sdcard");
-        if (rc != ESP_OK) { error("SD MOUNT FAILED"); return; }
+        if (rc != ESP_OK) {
+            portENTER_CRITICAL(&s_lock); s->status.mounted = false; portEXIT_CRITICAL(&s_lock);
+            error("SD MOUNT FAILED"); return;
+        }
         portENTER_CRITICAL(&s_lock); s->status.mounted = true; portEXIT_CRITICAL(&s_lock);
     }
     DIR *directory = opendir(MUSE_MUSIC_DIRECTORY);

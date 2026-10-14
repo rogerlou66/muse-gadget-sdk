@@ -44,6 +44,7 @@
 #include "muse_audio.h"
 #include "muse_board.h"
 #include "muse_mem.h"
+#include "box0_sdcard.h"
 
 static const char *TAG = "board";
 
@@ -387,6 +388,7 @@ static const muse_board_t s_board = {
     .wait_buttons = wait_buttons,
     .read_power = read_power,
     .power_off = power_off,
+    .storage_mount = muse_box0_storage_mount,
 };
 
 /* Home Link's app_main starts Muse with this board (main/main.c). */

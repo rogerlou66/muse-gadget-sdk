@@ -67,7 +67,7 @@ if(CONFIG_MUSE_ENABLED)
         # One driver: the 1.75 differs only in pins (its BSP's) and its PWR key.
         list(APPEND srcs "boards/board_waveshare_s3_175c.c" "boards/muse_lcd_bands.c")
     elseif(CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0)
-        list(APPEND srcs "boards/board_atk_dnesp32s3_box0.c" "muse_music.c" "muse_music_file.c")
+        list(APPEND srcs "boards/board_atk_dnesp32s3_box0.c" "boards/box0_sdcard.c" "muse_music.c" "muse_music_file.c")
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")
     elseif(CONFIG_MUSE_BOARD_ESPRESSIF_BOX_3)
@@ -110,7 +110,7 @@ set(muse_priv_requires
     bt esp-tls mbedtls esp_app_format esp_http_client
     noise_core minimp3 tcp_transport
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
-    esp_driver_pcnt)
+    esp_driver_pcnt fatfs sdmmc esp_driver_sdspi)
 list(APPEND muse_priv_requires camera)
 
 idf_component_register(

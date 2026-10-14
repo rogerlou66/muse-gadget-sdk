@@ -355,9 +355,9 @@ A second middle-button click still ends a recording early. Other boards retain
 their 15-second recording limit. Capture and complete-WAV buffers use the
 same BOX0 duration to avoid truncating the note before transcription.
 
-### Experimental BOX0 SD music player (hardware mount pending)
+### BOX0 SD music player
 
-The prepared player reads MP3 files from `/sdcard/music` using bounded streaming
+The player reads MP3 files from `/sdcard/music` using bounded streaming
 buffers, converts mono/stereo audio to the existing speaker format and leaves
 ASR/TTS and 30-second recording unchanged. The SD Music menu uses left/down,
 right/up and middle/select for songs, pause/resume, next, stop, rescan and Back.
@@ -368,14 +368,15 @@ with music paused and available to resume. Sleeping and power-off stop music.
 At most 64 regular `.mp3`/`.MP3` files are listed; hidden files, symlinks and
 subdirectories are excluded. No files are written or formatted.
 
-**This is not yet a working BOX0 card reader.** Its reference firmware does not
-define the onboard TF pins; `storage_mount` must be implemented from the exact
-BOX0 schematic or verified vendor example before hardware playback can work.
-Ordinary DNESP32S3 examples use GPIO2 for SD chip-select, but BOX0 uses GPIO2
-for its power latch: do not reuse that map. Until an exact-board mount is
-provided the player reports `SD WIRING NOT CONFIGURED` and drives no SD pins.
+The onboard TF uses SPI3 with CS=GPIO15, CLK=GPIO16, MOSI=GPIO17 and
+MISO=GPIO18, recovered from the exact-board ATK vendor firmware. See
+[the evidence](docs/box0-tf-wiring.md). The LCD keeps its separate SPI2 bus.
+Use a FAT32/MBR card and put songs in the root `MUSIC` directory (`music` also
+works on FAT). UTF-8 long filenames are supported; names must fit in 127 bytes.
+Select **SD Music → Rescan card**, then choose a song. Card removal or read
+failure stops playback; reinsert and rescan. A failed mount never formats
+or erases the card. exFAT and recursive subdirectory scanning are unsupported.
 
 USB diagnostics: `>music.scan`, `>music.status`, `>music.play=1` (one-based
 catalog index), `>music.toggle`, `>music.next`, `>music.prev`, `>music.stop`.
-Requests are queued; poll status for completion. Hardware functionality and
-physical playback/interruption have not yet been verified.
+Requests are queued; poll status for completion.

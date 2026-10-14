@@ -52,3 +52,9 @@ CONFIG_HOMEHUB_OTA_ENABLED=n
 
 # OpenAI serves a cross-signed GTS chain; retain root and hostname validation.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+
+# Onboard TF: UTF-8 long names for Chinese MP3 filenames.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_FATFS_CODEPAGE_936=y

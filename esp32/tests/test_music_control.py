@@ -85,6 +85,10 @@ int main(void) {
  assert(!s_file&&!s->status.error[0]);
  command(MUSE_MUSIC_PLAY,0);command(MUSE_MUSIC_TOGGLE,0);muse_music_interrupt();poll();
  assert(!s_file&&!s->status.paused);
+ /* Removal/reinsertion must revalidate the card even after a successful mount. */
+ fail_mount=true;command(MUSE_MUSIC_SCAN,0);
+ assert(!s->status.mounted&&!s->status.count&&strstr(s->status.error,"MOUNT FAILED"));
+ fail_mount=false;command(MUSE_MUSIC_SCAN,0);assert(s->status.mounted&&s->status.count==2);
  return 0;
 }
 '''
