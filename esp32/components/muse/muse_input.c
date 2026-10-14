@@ -33,12 +33,18 @@
 #include "muse_battery.h"
 #include "muse_ble.h"
 #include "muse_board.h"
+#include "muse_button_gestures.h"
 #include "muse_chat.h"
 #include "muse_console.h"
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
 #include "muse_settings.h"
+#if CONFIG_MUSE_HATCH
+#include "muse_tts.h"
+#include "muse_asr.h"
+#include "muse_chat_priv.h"
+#endif
 #include "muse_state.h"
 #include "muse_ui.h"
 #include "muse_voice.h"
@@ -73,6 +79,9 @@ static bool s_talk_down;
 static bool s_cpu_low;      /* display stopped and the CPU allowed to sleep */
 static volatile bool s_power_off_requested;
 static volatile bool s_nap_now;   /* ">nap": asleep, as if on battery, nap without waiting WIFI_NAP_MS */
+static muse_button_gestures_t s_gestures;
+static bool s_gesture_pair_press;
+static uint32_t s_record_started_ms;
 
 static void post(muse_ptt_t type, bool wake)
 {
@@ -268,6 +277,60 @@ static void talk_button(unsigned ev)
     s_talk_down = talk_down;
 }
 
+static void finish_toggle_recording(void)
+{
+    if (s_talk_down) {
+        post(MUSE_PTT_UP, false);
+        s_talk_down = false;
+    }
+}
+
+static void gesture_talk_button(unsigned ev, uint32_t now)
+{
+    /* Pairing confirmation takes precedence and consumes this physical press. */
+    if ((ev & MUSE_BTN_TALK_PRESS) && muse_link_state() == MUSE_LINK_CONFIRM && muse_link_talk_press()) {
+        finish_toggle_recording();
+        s_gestures = (muse_button_gestures_t){0};
+        s_gesture_pair_press = true;
+    }
+    if (s_gesture_pair_press) {
+        if (ev & MUSE_BTN_TALK_RELEASE) s_gesture_pair_press = false;
+        return;
+    }
+    /* A failed start or a recording's time limit must not leave the latch on. */
+    if (s_talk_down && (uint32_t)(now - s_record_started_ms) >= 1000 &&
+        muse_state_mode(NULL) != MUSE_MODE_LISTENING) {
+        finish_toggle_recording();
+    }
+    unsigned action = muse_button_gestures_step(&s_gestures,
+        ev & MUSE_BTN_TALK_PRESS, ev & MUSE_BTN_TALK_RELEASE, now);
+    if (!action) return;
+    muse_state_poke();
+    if (action & MUSE_GESTURE_LONG) {
+        finish_toggle_recording();
+        ESP_LOGI(TAG, "middle gesture: long (screen toggle)");
+        set_asleep(!muse_state_asleep(), "middle long press");
+    } else if (action & MUSE_GESTURE_DOUBLE) {
+        finish_toggle_recording();
+        set_asleep(false, "middle double click");
+        ESP_LOGI(TAG, "middle gesture: double (menu)");
+        if (!muse_menu_is_open()) muse_menu_key(MUSE_MENU_DOWN);
+    } else if (action & MUSE_GESTURE_SINGLE) {
+        ESP_LOGI(TAG, "middle gesture: single");
+        if (muse_link_talk_press()) return;
+        if (muse_state_asleep()) set_asleep(false, "middle click");
+        if (muse_menu_is_open()) {
+            muse_menu_key(MUSE_MENU_SELECT);
+        } else if (s_talk_down) {
+            finish_toggle_recording();
+        } else {
+            s_talk_down = true;
+            s_record_started_ms = now;
+            post(MUSE_PTT_DOWN, false);
+        }
+    }
+}
+
 /* Keyboard menus don't repurpose Space/GO as Select. Navigation wakes the
  * screen without accidentally changing a setting; Enter can confirm pairing. */
 static void keyboard_buttons(unsigned ev)
@@ -402,7 +465,10 @@ static void input_task(void *arg)
         if (ev & (MUSE_BTN_TALK_PRESS | MUSE_BTN_TALK_RELEASE)) {
             ESP_LOGI(TAG, "talk key:%s%s", ev & MUSE_BTN_TALK_PRESS ? " press" : "",
                      ev & MUSE_BTN_TALK_RELEASE ? " release" : "");
-            talk_button(ev);
+            if (!muse_board->talk_gestures) talk_button(ev);
+        }
+        if (muse_board->talk_gestures) {
+            gesture_talk_button(ev, (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
         }
         keyboard_buttons(ev);
         /* A latched key (the 1.75's PMU) can report press and release in the
@@ -455,7 +521,8 @@ static void input_task(void *arg)
         /* Paused, anything but a button (a pairing prompt, an image) is
          * noticed within REST_WAIT_MS. Napping, nothing comes over the
          * network; USB power arriving is noticed within NAP_WAIT_MS. */
-        if (paused && muse_board->wait_buttons) {
+        if (paused && muse_board->wait_buttons &&
+            !(muse_board->talk_gestures && (s_gestures.down || s_gestures.pending))) {
             muse_board->wait_buttons(napping ? NAP_WAIT_MS : REST_WAIT_MS);
         } else {
             vTaskDelay(pdMS_TO_TICKS(paused ? REST_POLL_MS : POLL_MS));
@@ -570,6 +637,43 @@ static void set_face(const char *name)
  */
 static bool console_command(char *line, bool whole)
 {
+#if CONFIG_MUSE_HATCH
+    if(!strcmp(line,"asr.replay=muse")) {muse_hatch_replay_note();return true;}
+    if(!strcmp(line,"asr.status")) {
+        muse_asr_config_t cfg;muse_settings_asr_config(&cfg);
+        printf("@asr {\"provider\":\"%s\",\"model\":\"%s\",\"language\":\"%s\",\"configured\":%s,\"http\":%d}\n",
+            cfg.on?"openai":"muse",cfg.model,cfg.language,muse_settings_openai_configured()?"true":"false",muse_asr_last_http());
+        fflush(stdout);return true;
+    }
+    if(!strcmp(line,"asr.dump")) {
+        uint8_t *wav;size_t len;
+        if(!muse_asr_snapshot(&wav,&len)) {printf("@asr_wav {\"error\":\"no recording\"}\n");fflush(stdout);return true;}
+        char encoded[513];
+        for(size_t off=0;off<len;off+=384) {
+            size_t n=len-off<384?len-off:384;
+            size_t chars=muse_hatch_base64(wav+off,n,encoded);encoded[chars]=0;
+            printf("@asr_wav {\"offset\":%u,\"bytes\":%u,\"total\":%u,\"data\":\"%s\"}\n",
+                (unsigned)off,(unsigned)n,(unsigned)len,encoded);
+            fflush(stdout);vTaskDelay(pdMS_TO_TICKS(2));
+        }
+        printf("@asr_wav {\"done\":true,\"total\":%u}\n",(unsigned)len);fflush(stdout);free(wav);return true;
+    }
+#endif
+    if (!strcmp(line,"tts.status")) {
+        muse_tts_config_t *cfg=heap_caps_malloc(sizeof(*cfg),MUSE_BIG_CAPS);
+        if(!cfg){printf("@tts {\"error\":\"out of memory\"}\n");fflush(stdout);return true;}
+        muse_settings_tts_config(cfg);
+        int http=0;
+#if CONFIG_MUSE_HATCH
+        http=muse_tts_last_http();
+#endif
+        printf("@tts {\"on\":%s,\"configured\":%s,\"provider\":\"%s\",\"region\":\"%s\",\"model\":\"%s\",\"voice\":\"%s\",\"speed\":%.2f,\"http\":%d}\n",
+            cfg->on?"true":"false",muse_settings_tts_configured()?"true":"false",cfg->qwen?"qwen":"openai",cfg->qwen_region,
+            cfg->qwen?cfg->qwen_model:cfg->model,cfg->qwen?cfg->qwen_voice:cfg->voice,cfg->speed_pct/100.0,http);
+        memset(cfg,0,sizeof(*cfg));free(cfg);
+        fflush(stdout);
+        return true;
+    }
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);

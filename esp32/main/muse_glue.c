@@ -401,6 +401,7 @@ static const muse_link_ops_t s_ops = {
     .wifi_nap = op_wifi_nap,
     .wifi_saved = op_wifi_saved,
     .wifi_forget = op_wifi_forget,
+    .node_id = identity_node_id,
 };
 
 // ---- Keeper: joins a saved network and applies BLE, on an internal stack ----

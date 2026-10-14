@@ -30,6 +30,11 @@ void muse_link_register(const muse_link_ops_t *ops)
     s_ops = ops;
 }
 
+const char *muse_link_node_id(void)
+{
+    return s_ops && s_ops->node_id ? s_ops->node_id() : NULL;
+}
+
 void muse_link_set_state(muse_link_state_t state)
 {
     if (state != s_state) {

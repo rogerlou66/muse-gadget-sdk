@@ -71,9 +71,11 @@ typedef struct {
     void (*wifi_nap)(bool nap);                   /* screen off a while: leave Wi-Fi until false */
     int (*wifi_saved)(muse_wifi_saved_t *out, int max);   /* most recently joined first */
     void (*wifi_forget)(const char *ssid);        /* one saved network; empty forgets them all */
+    const char *(*node_id)(void);                 /* registered backend device identifier */
 } muse_link_ops_t;
 
 void muse_link_register(const muse_link_ops_t *ops);
+const char *muse_link_node_id(void);
 
 /* Link's status, mirrored from its LED state. */
 void muse_link_set_state(muse_link_state_t state);

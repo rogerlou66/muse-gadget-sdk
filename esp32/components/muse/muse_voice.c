@@ -35,6 +35,9 @@
 #include "muse_input.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
+#if CONFIG_MUSE_HATCH
+#include "muse_asr.h"
+#endif
 #include "muse_state.h"
 #include "muse_wifi.h"
 
@@ -46,6 +49,10 @@ static const char *TAG = "muse_voice";
 #define MIN_HELD_FRAMES (MUSE_AUDIO_RATE * 3 / 10)   /* shorter presses are taps, not speech */
 #if CONFIG_MUSE_BOARD_M5STACK_CARDPUTER_ADV
 #define PRE_CHUNKS 6                                   /* 120 ms; a 320 ms upload burst stalls on the ADV */
+#elif CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+/* Cover a normal click plus the 350 ms double-click decision. The idle mic
+ * ring preserves opening syllables spoken immediately after the button tap. */
+#define PRE_CHUNKS 40                                  /* 800 ms */
 #else
 #define PRE_CHUNKS 16                                  /* 320 ms of audio kept from before the press */
 #endif
@@ -248,6 +255,7 @@ static void take(rec_stats_t *st, const int16_t *pcm)
  */
 static bool record(bool barge_in, size_t *held, char *why, size_t cap)
 {
+    muse_audio_capture_begin();
     muse_state_set_mode(MUSE_MODE_LISTENING);
     muse_state_set_progress(0);
     s_rec_n = s_sent = 0;
@@ -335,6 +343,7 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
     ESP_LOGI(TAG, "recorded %.2fs%s: rms %.1f dBFS, peak %.1f dBFS, floor %.1f dBFS, %d clipped, gain %d dB",
              (double)n / MUSE_AUDIO_RATE, released ? "" : " (max)", rms_db < -100.0f ? -100.0f : rms_db,
              20.0 * log10((st.peak + 1) / 32768.0), st.floor_db, st.clipped, muse_settings_mic_gain());
+    muse_audio_capture_report();
     return ok;
 }
 
@@ -344,15 +353,22 @@ static void go_idle(const char *caption);
  * Plays Hatch's reply as it arrives, with its text as the caption. Returns
  * true if interrupted by a new press. *delivered: the VM has the note.
  */
-static bool hatch_reply(bool *delivered)
+static bool hatch_reply(bool *delivered, bool *discard)
 {
     muse_state_set_mode(MUSE_MODE_THINKING);
     muse_state_set_caption("SENDING VOICE NOTE");   /* until there's a transcript or reply */
-    static int16_t buf[MUSE_AUDIO_CHUNK];
-    static const int16_t silence[MUSE_AUDIO_CHUNK];
+#if CONFIG_MUSE_HATCH && CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    if(muse_asr_enabled())muse_state_set_caption("TRANSCRIBING...");
+#endif
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    EXT_RAM_BSS_ATTR static int16_t buf[MUSE_AUDIO_PLAY_CHUNK];
+#else
+    static int16_t buf[MUSE_AUDIO_PLAY_CHUNK];
+#endif
+    static const int16_t silence[MUSE_AUDIO_PLAY_CHUNK];
     char text[96];
     static char page[MUSE_CAPTION_MAX];
-    bool done = false, speaking = false, replied = false;
+    bool done = false, speaking = false, replied = false, heard = false;
     size_t played = 0;
     int64_t t0 = esp_timer_get_time();
     *delivered = false;
@@ -361,13 +377,20 @@ static bool hatch_reply(bool *delivered)
         while ((ev = muse_hatch_turn_event(text, sizeof(text))) != MUSE_HATCH_EV_NONE) {
             switch (ev) {
             case MUSE_HATCH_EV_HEARD:
+                heard=true;
                 if (!speaking && !replied) {
                     muse_state_set_caption("\"%s\"", text);
                 }
                 break;
+            case MUSE_HATCH_EV_WORKING:
+                if(!speaking && !replied)muse_state_set_caption("%s",text);
+                break;
+            case MUSE_HATCH_EV_INPUT_INVALID:
+                *discard=true;
+                muse_state_set_level(0);go_idle(text);return false;
             case MUSE_HATCH_EV_SENT:
                 *delivered = true;
-                if (!speaking && !replied) {
+                if (!speaking && !replied && !heard) {
                     muse_state_set_caption("NOTE SENT - WAITING FOR MUSE");
                 }
                 break;
@@ -397,7 +420,7 @@ static bool hatch_reply(bool *delivered)
             muse_state_set_level(0);
             return true;
         }
-        size_t n = muse_hatch_turn_read(buf, MUSE_AUDIO_CHUNK, speaking || done ? 0 : 20);
+        size_t n = muse_hatch_turn_read(buf, MUSE_AUDIO_PLAY_CHUNK, speaking || done ? 0 : 20);
         if (n) {
             if (!speaking) {
                 speaking = true;
@@ -405,14 +428,14 @@ static bool hatch_reply(bool *delivered)
                 ESP_LOGI(TAG, "reply audio after %.2fs", (esp_timer_get_time() - t0) / 1e6);
             }
             muse_state_set_level(muse_audio_level(buf, n));
-            muse_audio_write(buf, n);
+            muse_audio_write_rate(buf, n, MUSE_AUDIO_PLAY_RATE);
             played += n;
         } else if (done) {
             break;
         } else if (speaking) {
             /* Between messages: keep the speaker fed so it doesn't replay stale DMA. */
             muse_state_set_level(0);
-            muse_audio_write(silence, MUSE_AUDIO_CHUNK);
+            muse_audio_write_rate(silence, MUSE_AUDIO_PLAY_CHUNK, MUSE_AUDIO_PLAY_RATE);
         }
         /* The page being said, or before the speech the reply's opening page. */
         if ((speaking || replied) && muse_hatch_turn_caption(played, page, sizeof(page))) {
@@ -420,7 +443,7 @@ static bool hatch_reply(bool *delivered)
         }
     }
     muse_state_set_level(0);
-    ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total", (double)played / MUSE_AUDIO_RATE,
+    ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total", (double)played / MUSE_AUDIO_PLAY_RATE,
              (esp_timer_get_time() - t0) / 1e6);
     if (!played) {
         /* No speech (TTS unavailable): leave the reply text up for a moment. */
@@ -604,7 +627,7 @@ static feed_t feed_rest(const int16_t *pcm, size_t frames, size_t *sent, bool yi
 }
 
 /* Asleep: waits for the VM to have the note just sent. */
-static bool wait_delivered(void)
+static bool wait_delivered(bool *discard)
 {
     char text[96];
     int64_t give_up = esp_timer_get_time() + ACK_WAIT_US;
@@ -614,6 +637,7 @@ static bool wait_delivered(void)
             if (ev == MUSE_HATCH_EV_SENT || ev == MUSE_HATCH_EV_REPLY || ev == MUSE_HATCH_EV_DONE) {
                 return true;
             }
+            if (ev == MUSE_HATCH_EV_INPUT_INVALID) {*discard=true;return false;}
             if (ev == MUSE_HATCH_EV_ERROR) {
                 ESP_LOGW(TAG, "muse: %s", text);
                 return false;
@@ -644,11 +668,11 @@ static bool send_held(bool quiet)
     muse_hatch_turn_begin();
     size_t sent = 0;
     feed_t fed = feed_rest(h->pcm, h->frames, &sent, true);
-    bool delivered = false, interrupted = false;
+    bool delivered = false, interrupted = false, discard = false;
     if (fed == FED && quiet) {
-        delivered = wait_delivered();
+        delivered = wait_delivered(&discard);
     } else if (fed == FED) {
-        interrupted = hatch_reply(&delivered);
+        interrupted = hatch_reply(&delivered,&discard);
     }
     if (fed != FED || quiet) {
         muse_hatch_turn_cancel();   /* asleep, the reply is left for the app */
@@ -660,12 +684,12 @@ static bool send_held(bool quiet)
         return false;
     }
     const char *caption;
-    if (delivered || interrupted) {
+    if (delivered || interrupted || discard) {
         drop_oldest();
         s_next_send_us = 0;   /* the next one right away */
         s_send_backoff_us = RETRY_MIN_US;
         if (quiet) {
-            muse_state_set_caption("SAVED NOTE SENT");
+            muse_state_set_caption("%s",discard?"没听清，请重说":"SAVED NOTE SENT");
         }
         return interrupted;
     } else if (++h->tries >= HELD_TRIES) {
@@ -715,7 +739,7 @@ static bool held_due(void)
  */
 static bool finish_note(void)
 {
-    bool delivered;
+    bool delivered, discard=false;
 #if HOLD_NOTES
     if (s_rec) {
         bool fed = false, interrupted = false;
@@ -735,9 +759,9 @@ static bool finish_note(void)
             }
         }
         if (fed) {
-            interrupted = hatch_reply(&delivered);
+            interrupted = hatch_reply(&delivered,&discard);
         }
-        if (delivered || interrupted) {
+        if (delivered || interrupted || discard) {
             drop_rec();
         } else {
             hold_rec(s_tried);
@@ -747,7 +771,7 @@ static bool finish_note(void)
 #endif
     muse_hatch_turn_end();   /* before the chirp, which takes ~90 ms */
     muse_audio_chirp(0);
-    return hatch_reply(&delivered);
+    return hatch_reply(&delivered,&discard);
 }
 
 /*
@@ -832,8 +856,8 @@ static void voice_task(void *arg)
                 s_mp3test = false;
                 int16_t *pcm = NULL;
                 size_t n = muse_hatch_mp3_selftest(&pcm);
-                for (size_t i = 0; i < n; i += MUSE_AUDIO_CHUNK) {
-                    muse_audio_write(pcm + i, n - i < MUSE_AUDIO_CHUNK ? n - i : MUSE_AUDIO_CHUNK);
+                for (size_t i = 0; i < n; i += MUSE_AUDIO_PLAY_CHUNK) {
+                    muse_audio_write_rate(pcm + i, n - i < MUSE_AUDIO_PLAY_CHUNK ? n - i : MUSE_AUDIO_PLAY_CHUNK, MUSE_AUDIO_PLAY_RATE);
                 }
                 free(pcm);
                 pre_reset();
@@ -897,7 +921,8 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
         return ESP_FAIL;
     }
     /* Stack in PSRAM if there is any (this task never writes flash) to spare internal RAM for Wi-Fi/BLE. */
-    if (xTaskCreatePinnedToCoreWithCaps(voice_task, "muse_voice", 6144, NULL, 6, NULL, MUSE_AUDIO_CORE,
+    const int stack_bytes = MUSE_AUDIO_HW_RATE > MUSE_AUDIO_RATE ? 12 * 1024 : 6144;
+    if (xTaskCreatePinnedToCoreWithCaps(voice_task, "muse_voice", stack_bytes, NULL, 6, NULL, MUSE_AUDIO_CORE,
                                         MUSE_BIG_CAPS) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }

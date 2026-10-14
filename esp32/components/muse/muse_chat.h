@@ -62,6 +62,10 @@ typedef struct {
 
 /* Starts the connection task; it connects once Wi-Fi is up. */
 void muse_hatch_start(void);
+#if CONFIG_MUSE_HATCH
+/* Diagnostic: replay the last OpenAI WAV through Muse, reporting over USB. */
+void muse_hatch_replay_note(void);
+#endif
 
 /* The session task connects once Wi-Fi is up, and again whenever a turn needs it. */
 void muse_hatch_status(muse_hatch_status_t *out);
@@ -94,6 +98,8 @@ typedef enum {
     MUSE_HATCH_EV_DONE,     /* reply complete; the audio stream is drained after this */
     MUSE_HATCH_EV_ERROR,    /* turn failed; text says why */
     MUSE_HATCH_EV_SENT,     /* the VM has acknowledged the note */
+    MUSE_HATCH_EV_WORKING,  /* backend task activity, separate from reply speech */
+    MUSE_HATCH_EV_INPUT_INVALID, /* no recognized speech; discard rather than retry */
 } muse_hatch_ev_t;
 
 /* Non-blocking; copies the event's text. Events of cancelled turns are dropped. */
@@ -106,10 +112,11 @@ muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap);
  */
 bool muse_hatch_turn_caption(size_t played, char *out, size_t cap);
 
-/* Reply speech as 16 kHz mono. Waits up to wait_ms for some; returns frames read. */
+/* Reply speech as mono at MUSE_AUDIO_PLAY_RATE (ATK 48 kHz, others 16 kHz).
+ * Waits up to wait_ms for some; returns frames read. */
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms);
 
-/* Bench test: decodes a built-in MP3 to 16 kHz; caller frees *pcm. Returns frames. */
+/* Bench test: decodes a built-in MP3 at MUSE_AUDIO_PLAY_RATE; caller frees *pcm. */
 size_t muse_hatch_mp3_selftest(int16_t **pcm);
 
 /*

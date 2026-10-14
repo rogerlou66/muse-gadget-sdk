@@ -53,6 +53,13 @@ void muse_hatch_wav_header(uint8_t h[MUSE_HATCH_WAV_HEADER], uint32_t rate)
     put_le(h + 40, UINT32_MAX, 4);
 }
 
+void muse_hatch_wav_header_sized(uint8_t h[MUSE_HATCH_WAV_HEADER], uint32_t rate, uint32_t pcm_bytes)
+{
+    muse_hatch_wav_header(h, rate);
+    put_le(h + 4, pcm_bytes + MUSE_HATCH_WAV_HEADER - 8, 4);
+    put_le(h + 40, pcm_bytes, 4);
+}
+
 size_t muse_hatch_base64(const uint8_t *in, size_t n, char *out)
 {
     static const char A[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

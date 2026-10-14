@@ -23,7 +23,9 @@
 #include "freertos/queue.h"
 
 /*
- * Buttons, as the board reports them. The talk button is push-to-talk. On touch
+ * Buttons, as the board reports them. The talk button is push-to-talk unless
+ * talk_gestures is set: single toggles recording/selects in menus, double
+ * opens the menu, and a 1 s hold toggles the screen. Pairing has priority. On touch
  * boards the aux button puts the screen to sleep; holding it 1.5 s powers off,
  * and two quick presses toggle BLE phone setup. Without touch it opens the
  * two-button menu instead (muse_menu.h), where talk selects. Either button

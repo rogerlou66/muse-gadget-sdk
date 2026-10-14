@@ -27,6 +27,7 @@
 #include "esp_timer.h"
 
 #include "muse_board.h"
+#include "muse_audio_dsp.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
 
@@ -38,8 +39,27 @@ static const char *TAG = "muse_audio";
 static esp_codec_dev_handle_t s_spk;
 static esp_codec_dev_handle_t s_mic;
 static bool s_open;
-static int16_t s_in_stereo[MUSE_AUDIO_CHUNK * CHANNELS];
-static int16_t s_out_stereo[MUSE_AUDIO_CHUNK * CHANNELS];
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+#include "esp_ns.h"
+#include "esp_attr.h"
+EXT_RAM_BSS_ATTR static int16_t s_in_stereo[MUSE_AUDIO_HW_CHUNK * CHANNELS];
+EXT_RAM_BSS_ATTR static int16_t s_out_stereo[MUSE_AUDIO_HW_CHUNK * CHANNELS];
+EXT_RAM_BSS_ATTR static int16_t s_capture_work[MUSE_AUDIO_HW_CHUNK];
+EXT_RAM_BSS_ATTR static int16_t s_play_work[MUSE_AUDIO_HW_CHUNK];
+static int16_t s_clean[160];
+static size_t s_clean_at = 160;
+static ns_handle_t s_ns;
+static muse_audio_fir_t s_capture_fir, s_play_fir;
+static muse_audio_gain_t s_capture_gain, s_play_gain;
+static int s_last_play_rate;
+static bool s_raw_measure;
+static uint64_t s_raw_energy;
+static size_t s_raw_frames, s_raw_clipped;
+static int s_raw_peak;
+#else
+static int16_t s_in_stereo[MUSE_AUDIO_HW_CHUNK * CHANNELS];
+static int16_t s_out_stereo[MUSE_AUDIO_HW_CHUNK * CHANNELS];
+#endif
 
 /* One-pole high-pass on the mixed mic signal. */
 static float s_hpf_a;
@@ -48,13 +68,22 @@ static float s_hpf_x1, s_hpf_y1;
 static esp_err_t open_codecs(void)
 {
     esp_codec_dev_sample_info_t fs = {
-        .sample_rate = MUSE_AUDIO_RATE,
+        .sample_rate = MUSE_AUDIO_HW_RATE,
         .channel = CHANNELS,
         .bits_per_sample = 16,
     };
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_spk, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open speaker");
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_mic, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open mic");
     s_open = true;
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    s_capture_fir = (muse_audio_fir_t){0};
+    s_play_fir = (muse_audio_fir_t){0};
+    s_capture_gain = (muse_audio_gain_t){0};
+    s_play_gain = (muse_audio_gain_t){0};
+    s_clean_at = 160;
+    s_last_play_rate = 0;
+    s_hpf_x1 = s_hpf_y1 = 0;
+#endif
     return ESP_OK;
 }
 
@@ -66,12 +95,19 @@ esp_err_t muse_audio_init(int volume, int mic_gain_db)
     ESP_RETURN_ON_ERROR(open_codecs(), TAG, "open codecs");
     muse_audio_set_volume(volume);
     muse_audio_set_mic_gain(mic_gain_db);
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    /* Standalone classic suppression needs no wake-word/model partition. */
+    s_ns = ns_pro_create(10, 0, MUSE_AUDIO_RATE);
+    ESP_RETURN_ON_FALSE(s_ns, ESP_ERR_NO_MEM, TAG, "mild noise suppression init");
+    ESP_LOGI(TAG, "enhanced audio: codec %d Hz, mic %d Hz, playback %d Hz; mild NS + bounded AGC",
+             MUSE_AUDIO_HW_RATE, MUSE_AUDIO_RATE, MUSE_AUDIO_PLAY_RATE);
+#endif
 
     float rc = 1.0f / (2.0f * (float)M_PI * HPF_HZ);
     float dt = 1.0f / MUSE_AUDIO_RATE;
     s_hpf_a = rc / (rc + dt);
 
-    ESP_LOGI(TAG, "audio ready: %d Hz, %d ch, vol %d, mic gain %d dB", MUSE_AUDIO_RATE, CHANNELS, volume, mic_gain_db);
+    ESP_LOGI(TAG, "audio ready: %d Hz, %d ch, vol %d, mic gain %d dB", MUSE_AUDIO_HW_RATE, CHANNELS, volume, mic_gain_db);
     return ESP_OK;
 }
 
@@ -123,18 +159,18 @@ static float to_db(double mean_sq)
 
 void muse_audio_selftest(void)
 {
-    enum { FLUSH = MUSE_AUDIO_RATE / 4, MEASURE = MUSE_AUDIO_RATE / 2 };
+    enum { FLUSH = MUSE_AUDIO_HW_RATE / 4, MEASURE = MUSE_AUDIO_HW_RATE / 2 };
 
     /* Capture: drop the DMA backlog, then time a known number of frames. */
-    for (int n = 0; n < FLUSH; n += MUSE_AUDIO_CHUNK) {
+    for (int n = 0; n < FLUSH; n += MUSE_AUDIO_HW_CHUNK) {
         esp_codec_dev_read(s_mic, s_in_stereo, sizeof(s_in_stereo));
     }
     double sl = 0, sr = 0, slr = 0, ml = 0, mr = 0;
     int pl = 0, pr = 0;
     int64_t t0 = esp_timer_get_time();
-    for (int n = 0; n < MEASURE; n += MUSE_AUDIO_CHUNK) {
+    for (int n = 0; n < MEASURE; n += MUSE_AUDIO_HW_CHUNK) {
         esp_codec_dev_read(s_mic, s_in_stereo, sizeof(s_in_stereo));
-        for (int i = 0; i < MUSE_AUDIO_CHUNK; i++) {
+        for (int i = 0; i < MUSE_AUDIO_HW_CHUNK; i++) {
             int l = s_in_stereo[2 * i], r = s_in_stereo[2 * i + 1];
             ml += l;
             mr += r;
@@ -153,24 +189,35 @@ void muse_audio_selftest(void)
 
     /* Playback: fill the DMA queue with silence, then time more silence. */
     memset(s_out_stereo, 0, sizeof(s_out_stereo));
-    for (int n = 0; n < FLUSH; n += MUSE_AUDIO_CHUNK) {
+    for (int n = 0; n < FLUSH; n += MUSE_AUDIO_HW_CHUNK) {
         esp_codec_dev_write(s_spk, s_out_stereo, sizeof(s_out_stereo));
     }
     t0 = esp_timer_get_time();
-    for (int n = 0; n < MEASURE; n += MUSE_AUDIO_CHUNK) {
+    for (int n = 0; n < MEASURE; n += MUSE_AUDIO_HW_CHUNK) {
         esp_codec_dev_write(s_spk, s_out_stereo, sizeof(s_out_stereo));
     }
     float play_hz = MEASURE * 1e6f / (float)(esp_timer_get_time() - t0);
 
     ESP_LOGI(TAG, "self-test @ %d dB: mic L %.1f dBFS (peak %d, dc %d), R %.1f dBFS (peak %d, dc %d), corr %.2f",
              muse_settings_mic_gain(), to_db(vl), pl, (int)ml, to_db(vr), pr, (int)mr, corr);
-    ESP_LOGI(TAG, "self-test: capture %.0f Hz, playback %.0f Hz (expected %d)", cap_hz, play_hz, MUSE_AUDIO_RATE);
+    ESP_LOGI(TAG, "self-test: capture %.0f Hz, playback %.0f Hz (expected %d)", cap_hz, play_hz, MUSE_AUDIO_HW_RATE);
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    static int16_t processed[MUSE_AUDIO_CHUNK];
+    for (int n=0; n<MUSE_AUDIO_RATE/4; n+=MUSE_AUDIO_CHUNK)
+        ESP_ERROR_CHECK(muse_audio_read(processed,MUSE_AUDIO_CHUNK));
+    t0=esp_timer_get_time();
+    for (int n=0; n<MUSE_AUDIO_RATE/2; n+=MUSE_AUDIO_CHUNK)
+        ESP_ERROR_CHECK(muse_audio_read(processed,MUSE_AUDIO_CHUNK));
+    ESP_LOGI(TAG, "processed mic: %.0f Hz (expected %d), last frame %.1f dBFS, AGC %.2fx",
+             (MUSE_AUDIO_RATE/2)*1e6/(esp_timer_get_time()-t0), MUSE_AUDIO_RATE,
+             muse_audio_dbfs(processed,MUSE_AUDIO_CHUNK),s_capture_gain.gain);
+#endif
 }
 
 /* Goertzel power of `f` in an interleaved stereo buffer, as dBFS of a sine. */
 static float tone_db(const int16_t *st, int ch, size_t frames, float f)
 {
-    float k = 2.0f * cosf(2.0f * (float)M_PI * f / MUSE_AUDIO_RATE);
+    float k = 2.0f * cosf(2.0f * (float)M_PI * f / MUSE_AUDIO_HW_RATE);
     float s1 = 0, s2 = 0;
     for (size_t i = 0; i < frames; i++) {
         float s0 = st[2 * i + ch] + k * s1 - s2;
@@ -189,7 +236,7 @@ static float tone_db(const int16_t *st, int ch, size_t frames, float f)
  */
 void muse_audio_loopback_test(int volume)
 {
-    enum { TONE = MUSE_AUDIO_RATE * 3 / 10, SKIP = MUSE_AUDIO_RATE / 10, MEAS = TONE - SKIP };
+    enum { TONE = MUSE_AUDIO_HW_RATE * 3 / 10, SKIP = MUSE_AUDIO_HW_RATE / 10, MEAS = TONE - SKIP };
     static const float freqs[] = { 200, 400, 700, 1000, 2000, 3000, 4000, 6000 };
     static const int gains[] = { 0, 6, 12, 18, 24, 30, 33, 36 };
     const float amp = 0.25f * 32767.0f;   /* -12 dBFS tone */
@@ -210,18 +257,18 @@ void muse_audio_loopback_test(int volume)
             float f = t < 0 ? 0 : freqs[t];
             float phase = 0;
             size_t got = 0;
-            for (int n = 0; n < TONE + SKIP; n += MUSE_AUDIO_CHUNK) {
-                for (int i = 0; i < MUSE_AUDIO_CHUNK; i++) {
+            for (int n = 0; n < TONE + SKIP; n += MUSE_AUDIO_HW_CHUNK) {
+                for (int i = 0; i < MUSE_AUDIO_HW_CHUNK; i++) {
                     int16_t v = f ? (int16_t)(amp * sinf(phase)) : 0;
-                    phase += 2.0f * (float)M_PI * f / MUSE_AUDIO_RATE;
+                    phase += 2.0f * (float)M_PI * f / MUSE_AUDIO_HW_RATE;
                     s_out_stereo[2 * i] = s_out_stereo[2 * i + 1] = v;
                 }
                 esp_codec_dev_write(s_spk, s_out_stereo, sizeof(s_out_stereo));
                 esp_codec_dev_read(s_mic, s_in_stereo, sizeof(s_in_stereo));
                 /* Skip the first SKIP*2 frames: DMA latency plus the previous tone's tail. */
-                if (n >= 2 * SKIP && got + MUSE_AUDIO_CHUNK <= MEAS) {
+                if (n >= 2 * SKIP && got + MUSE_AUDIO_HW_CHUNK <= MEAS) {
                     memcpy(cap + got * CHANNELS, s_in_stereo, sizeof(s_in_stereo));
-                    got += MUSE_AUDIO_CHUNK;
+                    got += MUSE_AUDIO_HW_CHUNK;
                 }
             }
             for (size_t i = 0; i < got * CHANNELS; i++) {
@@ -249,6 +296,42 @@ void muse_audio_loopback_test(int volume)
 
 esp_err_t muse_audio_read(int16_t *mono, size_t frames)
 {
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    while (frames) {
+        if (s_clean_at == 160) {
+            enum { RAW = 160 * 3 };
+            if (esp_codec_dev_read(s_mic, s_in_stereo, RAW * CHANNELS * sizeof(int16_t)) != ESP_CODEC_DEV_OK)
+                return ESP_FAIL;
+            for (int i=0; i<RAW; i++) {
+                int x=s_in_stereo[2*i+muse_board->mic_slot];
+                s_capture_work[i]=x;
+                if (s_raw_measure) {
+                    int peak=abs(x);
+                    s_raw_energy+=(uint64_t)((int32_t)x*x);
+                    s_raw_frames++;
+                    s_raw_clipped+=peak>=32000;
+                    if (peak>s_raw_peak) s_raw_peak=peak;
+                }
+            }
+            muse_audio_decimate48(&s_capture_fir, s_capture_work, RAW, s_clean);
+            for (int i=0; i<160; i++) {
+                float x=s_clean[i], y=s_hpf_a*(s_hpf_y1+x-s_hpf_x1);
+                s_hpf_x1=x;s_hpf_y1=y;
+                s_clean[i]=(int16_t)(y>32767?32767:y<-32768?-32768:y);
+            }
+            /* ns_process receives complete 10 ms frames regardless of callers' read sizes. */
+            ns_process(s_ns, s_clean, s_capture_work);
+            memcpy(s_clean,s_capture_work,sizeof(s_clean));
+            muse_audio_input_gain(&s_capture_gain,s_clean,160);
+            s_clean_at=0;
+        }
+        size_t n=frames<160-s_clean_at?frames:160-s_clean_at;
+        memcpy(mono,s_clean+s_clean_at,n*sizeof(int16_t));
+        s_clean_at+=n;mono+=n;frames-=n;
+    }
+    return ESP_OK;
+#else
+
     while (frames) {
         size_t n = frames > MUSE_AUDIO_CHUNK ? MUSE_AUDIO_CHUNK : frames;
         if (esp_codec_dev_read(s_mic, s_in_stereo, n * CHANNELS * sizeof(int16_t)) != ESP_CODEC_DEV_OK) {
@@ -266,26 +349,45 @@ esp_err_t muse_audio_read(int16_t *mono, size_t frames)
         frames -= n;
     }
     return ESP_OK;
+#endif
+}
+
+esp_err_t muse_audio_write_rate(const int16_t *mono, size_t frames, int rate)
+{
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    if (rate!=MUSE_AUDIO_RATE && rate!=MUSE_AUDIO_PLAY_RATE) return ESP_ERR_INVALID_ARG;
+    if (rate!=s_last_play_rate) {
+        s_play_fir=(muse_audio_fir_t){0};
+        s_last_play_rate=rate;
+    }
+    while (frames) {
+        size_t max=rate==MUSE_AUDIO_RATE?MUSE_AUDIO_CHUNK:MUSE_AUDIO_HW_CHUNK;
+        size_t n=frames<max?frames:max;
+        size_t out_n;
+        if (rate==MUSE_AUDIO_RATE) out_n=muse_audio_interpolate16(&s_play_fir,mono,n,s_play_work);
+        else {memcpy(s_play_work,mono,n*sizeof(int16_t));out_n=n;}
+        muse_audio_output_process(&s_play_gain,s_play_work,out_n,!muse_settings_speaker_on());
+        for(size_t i=0;i<out_n;i++)s_out_stereo[2*i]=s_out_stereo[2*i+1]=s_play_work[i];
+        if(esp_codec_dev_write(s_spk,s_out_stereo,out_n*CHANNELS*sizeof(int16_t))!=ESP_CODEC_DEV_OK)return ESP_FAIL;
+        mono+=n;frames-=n;
+    }
+    return ESP_OK;
+#else
+    if(rate!=MUSE_AUDIO_RATE)return ESP_ERR_INVALID_ARG;
+    bool mute=muse_settings_speaker_on()==false;
+    while(frames){
+        size_t n=frames<MUSE_AUDIO_CHUNK?frames:MUSE_AUDIO_CHUNK;
+        for(size_t i=0;i<n;i++)s_out_stereo[2*i]=s_out_stereo[2*i+1]=mute?0:mono[i];
+        if(esp_codec_dev_write(s_spk,s_out_stereo,n*CHANNELS*sizeof(int16_t))!=ESP_CODEC_DEV_OK)return ESP_FAIL;
+        mono+=n;frames-=n;
+    }
+    return ESP_OK;
+#endif
 }
 
 esp_err_t muse_audio_write(const int16_t *mono, size_t frames)
 {
-    /* Speaker off still plays silence at the same pace, so captions timed to
-     * the audio scroll as if it were heard. */
-    bool mute = !muse_settings_speaker_on();
-    while (frames) {
-        size_t n = frames > MUSE_AUDIO_CHUNK ? MUSE_AUDIO_CHUNK : frames;
-        for (size_t i = 0; i < n; i++) {
-            s_out_stereo[2 * i] = mute ? 0 : mono[i];
-            s_out_stereo[2 * i + 1] = mute ? 0 : mono[i];
-        }
-        if (esp_codec_dev_write(s_spk, s_out_stereo, n * CHANNELS * sizeof(int16_t)) != ESP_CODEC_DEV_OK) {
-            return ESP_FAIL;
-        }
-        mono += n;
-        frames -= n;
-    }
-    return ESP_OK;
+    return muse_audio_write_rate(mono, frames, MUSE_AUDIO_RATE);
 }
 
 float muse_audio_dbfs(const int16_t *mono, size_t frames)
@@ -299,6 +401,23 @@ float muse_audio_dbfs(const int16_t *mono, size_t frames)
     }
     float db = to_db(acc / frames);
     return db < -100.0f ? -100.0f : db;
+}
+
+void muse_audio_capture_begin(void)
+{
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    s_raw_energy=0;s_raw_frames=s_raw_clipped=0;s_raw_peak=0;s_raw_measure=true;
+#endif
+}
+
+void muse_audio_capture_report(void)
+{
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    s_raw_measure=false;
+    if (s_raw_frames) ESP_LOGI(TAG, "raw mic: rms %.1f dBFS, peak %.1f dBFS, %u/%u clipped; software gain %.2fx",
+        to_db((double)s_raw_energy/s_raw_frames),20*log10f((s_raw_peak+1)/32768.0f),
+        (unsigned)s_raw_clipped,(unsigned)s_raw_frames,s_capture_gain.gain);
+#endif
 }
 
 float muse_audio_level(const int16_t *mono, size_t frames)

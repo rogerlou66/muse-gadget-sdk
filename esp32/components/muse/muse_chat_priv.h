@@ -74,9 +74,33 @@ static inline void muse_chat_reject(muse_chat_rejected_t *rejected, const char *
 #define MUSE_HATCH_NOTE_TAIL "\"}]}"
 #define MUSE_HATCH_WAV_HEADER 44
 
+/* A timeout budget hint, never an instruction to execute a tool. Image
+ * generation may take minutes without emitting agent-status events. */
+static inline bool muse_chat_image_wait(const char *text)
+{
+    if(!text)return false;
+    if(strstr(text,"图片") || strstr(text,"画") || strstr(text,"照片"))return true;
+    const char *words[]={"image","picture","photo","draw"};
+    for(unsigned k=0;k<sizeof(words)/sizeof(words[0]);k++) {
+        for(const char *p=text;*p;p++) {
+            const char *a=p,*b=words[k];
+            while(*a && *b) {
+                unsigned char c=(unsigned char)*a;
+                if(c>='A' && c<='Z')c+='a'-'A';
+                if(c!=(unsigned char)*b)break;
+                a++;b++;
+            }
+            if(!*b)return true;
+        }
+    }
+    return false;
+}
+
 /* Voice note helpers (muse_chat_text.c). The note's length isn't known until
  * the release, so the WAV header gives the streaming "unknown" size. */
 void muse_hatch_wav_header(uint8_t h[MUSE_HATCH_WAV_HEADER], uint32_t rate);
+/* Complete recording: real RIFF/data lengths for file-oriented decoders. */
+void muse_hatch_wav_header_sized(uint8_t h[MUSE_HATCH_WAV_HEADER], uint32_t rate, uint32_t pcm_bytes);
 /* Writes 4 characters per 3 bytes of `in`, padded; returns the length. */
 size_t muse_hatch_base64(const uint8_t *in, size_t n, char *out);
 

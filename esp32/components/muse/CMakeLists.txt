@@ -30,6 +30,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_battery.c"
         "muse_ui.c"
         "muse_audio.c"
+        "muse_audio_dsp.c"
         "muse_pmu.c"
         "muse_input.c"
         "muse_menu.c"
@@ -43,7 +44,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_link.c"
         "muse_ble.c")
     if(CONFIG_MUSE_HATCH)
-        list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
+        list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_tts.c" "muse_tts_payload.c" "muse_qwen_tts.c" "muse_qwen_payload.c" "muse_asr.c" "muse_asr_payload.c")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
     else()
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
@@ -65,6 +66,8 @@ if(CONFIG_MUSE_ENABLED)
     if(CONFIG_MUSE_BOARD_WAVESHARE_S3_175C OR CONFIG_MUSE_BOARD_WAVESHARE_S3_175)
         # One driver: the 1.75 differs only in pins (its BSP's) and its PWR key.
         list(APPEND srcs "boards/board_waveshare_s3_175c.c" "boards/muse_lcd_bands.c")
+    elseif(CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0)
+        list(APPEND srcs "boards/board_atk_dnesp32s3_box0.c")
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")
     elseif(CONFIG_MUSE_BOARD_ESPRESSIF_BOX_3)
@@ -105,7 +108,7 @@ endif()
 set(muse_priv_requires
     esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash
     bt esp-tls mbedtls esp_app_format esp_http_client
-    noise_core minimp3
+    noise_core minimp3 tcp_transport
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
     esp_driver_pcnt)
 list(APPEND muse_priv_requires camera)

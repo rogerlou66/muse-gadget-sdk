@@ -17,6 +17,8 @@
 #include "muse_settings.h"
 
 #include <string.h>
+#include <stdlib.h>
+#include <math.h>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -44,6 +46,8 @@ static struct {
     char host[MUSE_HOST_MAX + 1];
     char vm[MUSE_VM_MAX + 1];
     char token[MUSE_TOKEN_MAX + 1];
+    muse_tts_config_t tts;
+    muse_asr_config_t asr;
 } s = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
@@ -52,6 +56,9 @@ static struct {
     .sleep_s = 120,
     .wifi_on = true,
     .host = DEFAULT_HOST,
+    .tts = { .on = true, .model = "gpt-4o-mini-tts", .voice = "coral", .speed_pct = 100,
+        .qwen_region="singapore", .qwen_model="qwen3-tts-flash-realtime", .qwen_voice="Cherry" },
+    .asr = { .model = "gpt-transcribe", .language = "zh" },
 };
 
 static SemaphoreHandle_t s_lock;
@@ -132,6 +139,21 @@ esp_err_t muse_settings_init(void)
     load_str("host", s.host, sizeof(s.host));
     load_str("vm", s.vm, sizeof(s.vm));
     load_str("token", s.token, sizeof(s.token));
+    load_str("tts_key", s.tts.key, sizeof(s.tts.key));
+    load_str("tts_model", s.tts.model, sizeof(s.tts.model));
+    load_str("tts_voice", s.tts.voice, sizeof(s.tts.voice));
+    nvs_get_u16(s_nvs,"tts_speed",&s.tts.speed_pct);
+    if(s.tts.speed_pct<25 || s.tts.speed_pct>400)s.tts.speed_pct=100;
+    if (nvs_get_u8(s_nvs, "tts_on", &b) == ESP_OK) s.tts.on = b;
+    if (nvs_get_u8(s_nvs, "tts_qwen", &b) == ESP_OK) s.tts.qwen = b;
+    load_str("qwen_key",s.tts.qwen_key,sizeof(s.tts.qwen_key));
+    load_str("qwen_region",s.tts.qwen_region,sizeof(s.tts.qwen_region));
+    load_str("qwen_model",s.tts.qwen_model,sizeof(s.tts.qwen_model));
+    load_str("qwen_voice",s.tts.qwen_voice,sizeof(s.tts.qwen_voice));
+    load_str("asr_model", s.asr.model, sizeof(s.asr.model));
+    load_str("asr_language", s.asr.language, sizeof(s.asr.language));
+    load_str("asr_prompt", s.asr.prompt, sizeof(s.asr.prompt));
+    if (nvs_get_u8(s_nvs, "asr_on", &b) == ESP_OK) s.asr.on = b;
 
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
@@ -154,6 +176,106 @@ int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
 bool muse_settings_ble_on(void) { return s.ble_on; }
+bool muse_settings_tts_on(void) { return s.tts.on; }
+bool muse_settings_tts_configured(void) { return s.tts.qwen?s.tts.qwen_key[0]!=0:s.tts.key[0]!=0; }
+bool muse_settings_openai_configured(void) { return s.tts.key[0]!=0; }
+
+void muse_settings_asr_config(muse_asr_config_t *out)
+{
+    LOCKED(*out=s.asr;);
+}
+
+esp_err_t muse_settings_set_asr_option(const char *name, const char *value)
+{
+    if (!name || !value) return ESP_ERR_INVALID_ARG;
+    if (!strcmp(name,"provider")) {
+        if (strcmp(value,"openai") && strcmp(value,"muse")) return ESP_ERR_INVALID_ARG;
+        bool on=!strcmp(value,"openai");
+        LOCKED(s.asr.on=on;save_u8("asr_on",on););
+        return ESP_OK;
+    }
+    char *dst;
+    size_t cap;
+    const char *key;
+    if (!strcmp(name,"model")) {dst=s.asr.model;cap=sizeof(s.asr.model);key="asr_model";}
+    else if (!strcmp(name,"language")) {dst=s.asr.language;cap=sizeof(s.asr.language);key="asr_language";}
+    else if (!strcmp(name,"prompt")) {dst=s.asr.prompt;cap=sizeof(s.asr.prompt);key="asr_prompt";}
+    else return ESP_ERR_INVALID_ARG;
+    if (strlen(value)>=cap || (!value[0] && strcmp(name,"prompt"))) return ESP_ERR_INVALID_SIZE;
+    for (const unsigned char *p=(const unsigned char *)value;*p;p++) {
+        if (*p<32 || *p==127) return ESP_ERR_INVALID_ARG;
+        if (strcmp(name,"prompt") && !((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||
+            (*p>='0'&&*p<='9')||*p=='-'||*p=='_'||*p=='.')) return ESP_ERR_INVALID_ARG;
+    }
+    LOCKED(strlcpy(dst,value,cap);save_str(key,dst););
+    return ESP_OK;
+}
+
+void muse_settings_tts_config(muse_tts_config_t *out)
+{
+    LOCKED(*out = s.tts;);
+}
+
+void muse_settings_set_tts_on(bool on)
+{
+    LOCKED(s.tts.on = on; save_u8("tts_on", on););
+}
+
+static esp_err_t set_speech_key(char *dst,const char *nvs_key,const char *key,bool append)
+{
+    if (!key) return ESP_ERR_INVALID_ARG;
+    for (const unsigned char *p=(const unsigned char *)key; *p; p++)
+        if (*p<0x21 || *p>0x7e) return ESP_ERR_INVALID_ARG;
+    esp_err_t err=ESP_OK;
+    LOCKED({
+        size_t have=append?strlen(dst):0;
+        size_t add=strlen(key);
+        if (have+add>MUSE_TTS_KEY_MAX) err=ESP_ERR_INVALID_SIZE;
+        else {memcpy(dst+have,key,add+1);save_str(nvs_key,dst);}
+    });
+    return err;
+}
+
+esp_err_t muse_settings_set_tts_key(const char *key,bool append)
+{return set_speech_key(s.tts.key,"tts_key",key,append);}
+esp_err_t muse_settings_set_qwen_key(const char *key,bool append)
+{return set_speech_key(s.tts.qwen_key,"qwen_key",key,append);}
+
+esp_err_t muse_settings_set_tts_option(const char *name, const char *value)
+{
+    if (!value || !value[0]) return ESP_ERR_INVALID_ARG;
+    if(!strcmp(name,"provider")) {
+        if(strcmp(value,"openai") && strcmp(value,"qwen"))return ESP_ERR_INVALID_ARG;
+        bool qwen=!strcmp(value,"qwen");
+        if(qwen && (s.tts.speed_pct<50 || s.tts.speed_pct>200))return ESP_ERR_INVALID_ARG;
+        LOCKED(s.tts.qwen=qwen;save_u8("tts_qwen",qwen););return ESP_OK;
+    }
+    if(!strcmp(name,"region")) {
+        if(strcmp(value,"singapore") && strcmp(value,"beijing"))return ESP_ERR_INVALID_ARG;
+        LOCKED(strlcpy(s.tts.qwen_region,value,sizeof(s.tts.qwen_region));save_str("qwen_region",s.tts.qwen_region););return ESP_OK;
+    }
+    if(!strcmp(name,"speed")) {
+        char *end;
+        double speed=strtod(value,&end);
+        if(end==value || *end || !isfinite(speed) || speed<.25 || speed>4)return ESP_ERR_INVALID_ARG;
+        if(s.tts.qwen && (speed<.5 || speed>2))return ESP_ERR_INVALID_ARG;
+        uint16_t pct=(uint16_t)lround(speed*100);
+        LOCKED(s.tts.speed_pct=pct;nvs_set_u16(s_nvs,"tts_speed",pct);nvs_commit(s_nvs););
+        return ESP_OK;
+    }
+    for (const unsigned char *p=(const unsigned char *)value; *p; p++)
+        if (!((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||(*p>='0'&&*p<='9')||*p=='-'||*p=='_'))
+            return ESP_ERR_INVALID_ARG;
+    char *dst;
+    size_t cap;
+    const char *nvs_key;
+    if (!strcmp(name,"model")) {dst=s.tts.qwen?s.tts.qwen_model:s.tts.model;cap=sizeof(s.tts.model);nvs_key=s.tts.qwen?"qwen_model":"tts_model";}
+    else if (!strcmp(name,"voice")) {dst=s.tts.qwen?s.tts.qwen_voice:s.tts.voice;cap=sizeof(s.tts.voice);nvs_key=s.tts.qwen?"qwen_voice":"tts_voice";}
+    else return ESP_ERR_INVALID_ARG;
+    if (strlen(value)>=cap) return ESP_ERR_INVALID_SIZE;
+    LOCKED(strlcpy(dst,value,cap);save_str(nvs_key,dst););
+    return ESP_OK;
+}
 
 /* Home Link owns the saved networks (this is the first); the local copy is only a fallback. */
 void muse_settings_wifi(char ssid[MUSE_SSID_MAX + 1], char pass[MUSE_PASS_MAX + 1])

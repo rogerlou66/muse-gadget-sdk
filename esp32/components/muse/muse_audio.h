@@ -24,12 +24,24 @@
 
 /*
  * The board's mic and speaker codecs share one duplex I2S bus, so both run at
- * the same format: 16 kHz, 16-bit, 2 slots. This module hides that and
- * exposes mono buffers. Captured audio is high-passed to remove DC and rumble.
+ * the same hardware format: 16-bit, 2 slots. Most boards use 16 kHz; the ATK
+ * uses 48 kHz with filtered 16 kHz capture and native 48 kHz playback.
+ * This module exposes mono buffers. Capture removes DC/rumble; ATK also
+ * applies mild noise suppression and bounded software gain.
  */
 
 #define MUSE_AUDIO_RATE 16000
 #define MUSE_AUDIO_CHUNK 320   /* 20 ms of mono frames */
+
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+#define MUSE_AUDIO_HW_RATE 48000
+#define MUSE_AUDIO_PLAY_RATE 48000
+#else
+#define MUSE_AUDIO_HW_RATE MUSE_AUDIO_RATE
+#define MUSE_AUDIO_PLAY_RATE MUSE_AUDIO_RATE
+#endif
+#define MUSE_AUDIO_HW_CHUNK (MUSE_AUDIO_HW_RATE / 50)
+#define MUSE_AUDIO_PLAY_CHUNK (MUSE_AUDIO_PLAY_RATE / 50)
 
 esp_err_t muse_audio_init(int volume, int mic_gain_db);
 
@@ -45,12 +57,17 @@ void muse_audio_selftest(void);
 
 /* Plays tones while recording, across mic gains; logs levels. For tuning. */
 void muse_audio_loopback_test(int volume);
+/* Log raw ADC headroom for a recording, independently of downstream limiting. */
+void muse_audio_capture_begin(void);
+void muse_audio_capture_report(void);
 
 /* Blocking read of `frames` mono samples (mic pair mixed down). */
 esp_err_t muse_audio_read(int16_t *mono, size_t frames);
 
 /* Blocking write of `frames` mono samples to the speaker. */
 esp_err_t muse_audio_write(const int16_t *mono, size_t frames);
+/* Native reply/MP3 rate; ordinary UI tones still use the 16 kHz wrapper. */
+esp_err_t muse_audio_write_rate(const int16_t *mono, size_t frames, int rate);
 
 /* RMS of a buffer in dBFS (-100 for silence). */
 float muse_audio_dbfs(const int16_t *mono, size_t frames);

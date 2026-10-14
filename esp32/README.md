@@ -176,6 +176,7 @@ status screen.
 | Waveshare ESP32-S3-Touch-AMOLED-1.75C | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Waveshare ESP32-S3-Touch-AMOLED-1.75 | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Espressif ESP32-S3-BOX-3 | UI, touch, push-to-talk, settings, images | [BOX-3 setup](devices/esp32-s3-box-3.md) |
+| Alientek ATK-DNESP32S3-BOX0 (experimental) | UI, middle-button push-to-talk, left-button menu, images | `tools/muse/board.sh build atk-box0` |
 | AIPI Lite | UI, push-to-talk, two-button menu, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Waveshare ESP32-C6-Touch-AMOLED-1.8 | UI, push-to-talk with text replies | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Seeed SenseCAP Watcher | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
@@ -231,13 +232,50 @@ things you can change:
 
 - **Shorter answers.** Ask for them in the message itself, such as "Answer in
   one sentence."
-- **Spoken answers.** Send each reply's text to a text-to-speech API of your
-  choice and play the audio it returns. On boards with PSRAM, `start_tts` in
-  [`components/muse/muse_chat_session.cpp`](components/muse/muse_chat_session.cpp)
-  is the spot: it has the reply text, and the MP3 decoder, speaker and volume
-  are already wired up there.
+- **Spoken answers.** This custom build supports OpenAI TTS on full-UI boards.
+  Configure `tts.key`, `tts.model` (default `gpt-4o-mini-tts`), `tts.voice`
+  (default `coral`), and `tts.on=1` using the setup command interface.
+  The USB command `>tts.status` reports configuration without revealing the key.
+  `tts.speed=1.25` requests faster speech from the cloud API; supported values
+  range from 0.25 to 4.00, saved across restarts (factory default 1.00).
+  Each finished reply is synthesized over HTTPS and streamed into the MP3
+  player. Starting a new recording interrupts playback. Speaker Off suppresses
+  synthesis; `tts.on=0` disables reply narration while keeping other sounds.
+  Playback accumulates an initial MP3 reserve; ATK BOX0 also buffers decoded
+  PCM and refills after depletion to reduce interruptions from network jitter.
+  Short completed clips and final tails play without waiting for a full reserve.
+  Missing credentials or API failures retain text captions. The API key lives
+  in device NVS, separately from the firmware binary; NVS encryption depends
+  on the board's existing configuration.
 
 A few things worth knowing:
+
+This custom full-UI build can also use Qwen Cherry for narration, with the
+`qwen3-tts-flash-realtime` model, Chinese language hint and streamed 24 kHz MP3.
+Qwen credentials are stored separately from the OpenAI key used by ASR.
+Provision `tts.qwen_key` privately, set `tts.region=singapore` or `beijing`,
+then `tts.provider=qwen`, `tts.model=qwen3-tts-flash-realtime`,
+`tts.voice=Cherry` and `tts.speed=1.25`. The key must match that region;
+Virginia is not a supported endpoint for this adapter. Qwen speeds range from
+0.50 to 2.00. `tts.provider=openai` restores the saved OpenAI model/voice.
+`>tts.status` reports the selected provider without exposing either key.
+
+The custom ATK BOX0 build also supports independent OpenAI transcription.
+Set `asr.provider=openai`, `asr.model=gpt-transcribe`, and `asr.language=zh`
+through the setup command interface. It uses the same OpenAI credential as TTS,
+even when reply narration is off. A completed 16 kHz WAV is transcribed before
+its text is sent to Muse; the screen shows the recognized text while waiting
+for the reply. `asr.provider=muse` restores the original voice-note path.
+`asr.prompt` can supply relevant vocabulary context (default empty).
+An ASR failure asks for a retry, without silently forwarding a different transcript.
+If the service returns no recognized speech, the device asks you to speak again
+and discards that recording instead of repeatedly resending it as a saved note.
+
+USB diagnostics: `>asr.status` reports provider/model/language/HTTP status;
+`>asr.dump` exports the exact last ASR WAV as sequenced Base64 frames;
+`>asr.replay=muse` replays that WAV through Muse and reports the reply over USB.
+The diagnostic WAV stays in RAM and is replaced by the next completed request.
+These tools enable a comparison using the same recording, rather than two takes.
 
 - Your SDK token ships inside the firmware, so treat it as an identifier
   rather than a password. If it leaks, revoke it on gadgets.muse.ai, generate

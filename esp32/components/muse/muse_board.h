@@ -62,6 +62,7 @@ typedef struct {
     bool touch;             /* no touch: no settings screen, set up over BLE */
     float diagonal_in;      /* screen size; under 2" typing uses a keypad with bigger keys */
     bool keyboard;          /* dedicated menu navigation keys */
+    bool talk_gestures;     /* single toggles recording, double opens menu, long sleeps */
     const char *talk_button;    /* where the buttons are, for captions: "top" */
     const char *aux_button;     /* "bottom" */
     muse_button_hint_t talk_hint;   /* mic icon; the menu's hints follow both */
