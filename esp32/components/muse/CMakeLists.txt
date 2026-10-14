@@ -67,7 +67,7 @@ if(CONFIG_MUSE_ENABLED)
         # One driver: the 1.75 differs only in pins (its BSP's) and its PWR key.
         list(APPEND srcs "boards/board_waveshare_s3_175c.c" "boards/muse_lcd_bands.c")
     elseif(CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0)
-        list(APPEND srcs "boards/board_atk_dnesp32s3_box0.c")
+        list(APPEND srcs "boards/board_atk_dnesp32s3_box0.c" "muse_music.c" "muse_music_file.c")
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")
     elseif(CONFIG_MUSE_BOARD_ESPRESSIF_BOX_3)

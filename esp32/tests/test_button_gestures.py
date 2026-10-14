@@ -25,6 +25,7 @@ class ButtonGestures(unittest.TestCase):
 #include <assert.h>
 #include <stddef.h>
 #include "muse_button_gestures.h"
+#define CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0 1
 #define MUSE_BTN_TALK_PRESS 1
 #define MUSE_BTN_TALK_RELEASE 2
 #define MUSE_PTT_DOWN 1
@@ -34,6 +35,8 @@ class ButtonGestures(unittest.TestCase):
 #define MUSE_LINK_CONFIRM 1
 #define MUSE_MODE_LISTENING 1
 #define ESP_LOGI(...) ((void)0)
+static int music_interrupts;
+static void muse_music_suspend(void) {music_interrupts++;}
 static const char *TAG;
 static muse_button_gestures_t s_gestures;
 static bool s_talk_down, s_gesture_pair_press;
@@ -53,12 +56,12 @@ static void muse_menu_key(int k) { if(k==1) {menus++;menu=true;} else selects++;
 static void clear(void) {
  s_gestures=(muse_button_gestures_t){0}; s_talk_down=s_gesture_pair_press=false;
  s_record_started_ms=0; downs=ups=menus=selects=confirms=mode=link_state=0;
- asleep=menu=false;
+ asleep=menu=false; music_interrupts=0;
 }
 static void click(uint32_t t) { gesture_talk_button(1,t); gesture_talk_button(2,t+50); }
 int main(void) {
  /* Single starts only after the double-click window; a later click stops. */
- clear(); click(0); gesture_talk_button(0,399); assert(downs==0);
+ clear(); click(0); gesture_talk_button(0,399); assert(downs==0 && music_interrupts==1);
  gesture_talk_button(0,400); assert(downs==1 && ups==0 && s_talk_down);
  mode=1; click(700); gesture_talk_button(0,1100); assert(ups==1 && !s_talk_down);
  /* Double click must open the menu without starting an accidental note. */
@@ -70,7 +73,7 @@ int main(void) {
  gesture_talk_button(2,2050); gesture_talk_button(0,2500); assert(asleep && downs==0);
  gesture_talk_button(1,3000); gesture_talk_button(0,4000); assert(!asleep && downs==0);
  /* In a menu a single selects; a double doesn't change a setting. */
- clear(); menu=true; click(0); gesture_talk_button(0,400); assert(selects==1 && downs==0);
+ clear(); menu=true; click(0); gesture_talk_button(0,400); assert(selects==1 && downs==0 && music_interrupts==0);
  clear(); menu=true; click(0); click(200); assert(selects==0 && downs==0);
  /* Opening a menu while latched recording finishes the note exactly once. */
  clear(); click(0); gesture_talk_button(0,400); mode=1;

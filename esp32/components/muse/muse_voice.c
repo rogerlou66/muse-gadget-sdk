@@ -34,6 +34,7 @@
 #include "muse_chat.h"
 #include "muse_input.h"
 #include "muse_mem.h"
+#include "muse_music.h"
 #include "muse_settings.h"
 #if CONFIG_MUSE_HATCH
 #include "muse_asr.h"
@@ -818,6 +819,9 @@ static void voice_task(void *arg)
 {
     bool pending_down = false;
     muse_audio_selftest();
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    if (!muse_music_init()) ESP_LOGW(TAG, "music player unavailable; voice remains enabled");
+#endif
     for (;;) {
         bool wake = false;
         if (!pending_down) {
@@ -825,12 +829,18 @@ static void voice_task(void *arg)
             bool asleep = muse_state_asleep();
             bool battery = muse_state_on_battery();
             bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback;
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+            rest = rest && !muse_music_busy();
+#endif
 #if HOLD_NOTES
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
             if (held_due() && !press_waiting()) {
                 set_resting(false);   /* full power while it goes, even asleep */
                 muse_wifi_power(MUSE_WIFI_FULL);
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+                muse_music_stop_owned();
+#endif
                 pending_down = send_held(asleep);
                 pre_reset();
                 if (!pending_down && !asleep && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
@@ -871,6 +881,29 @@ static void voice_task(void *arg)
                 muse_audio_loopback_test(muse_settings_volume());
                 pre_reset();
             }
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+            if (asleep || muse_state_mode(NULL) == MUSE_MODE_OFF) muse_music_interrupt();
+            const int16_t *music_pcm = NULL;
+            size_t music_frames = muse_music_poll(&music_pcm);
+            bool music_reset = muse_music_take_reset();
+            if (music_reset) pre_reset();
+            if (music_frames) {
+                muse_state_poke();
+                muse_state_set_mode(MUSE_MODE_SPEAKING);
+                muse_music_status_t music;
+                muse_music_status(&music);
+                muse_state_set_caption("%s", music.name);
+                if (muse_audio_write_rate(music_pcm, music_frames, MUSE_AUDIO_PLAY_RATE) != ESP_OK) {
+                    muse_music_stop_owned();
+                    pre_reset();
+                    go_idle("MUSIC AUDIO FAILED");
+                }
+            } else if (music_reset && muse_state_mode(NULL) != MUSE_MODE_OFF) {
+                muse_music_status_t music;
+                muse_music_status(&music);
+                go_idle(music.error);
+            }
+#endif
             /* The 20 ms read paces this loop. */
             idle_capture();
             if (xQueueReceive(s_queue, &ev, 0) != pdTRUE) {
@@ -885,6 +918,9 @@ static void voice_task(void *arg)
         if (wake && !held_on_waking()) {
             continue;   /* a tap: it only woke Muse */
         }
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+        muse_music_stop_owned(); /* same owner: no music/TTS writer can race this recording */
+#endif
         muse_wifi_power(MUSE_WIFI_FULL);
         if (!can_record()) {
             pending_down = false;

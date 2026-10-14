@@ -103,6 +103,8 @@ typedef struct {
      * buttons needn't be polled. NULL: polled. */
     void (*wait_buttons)(int timeout_ms);
     esp_err_t (*read_power)(muse_power_t *out);
+    /* Optional read-only media mount. Exact-board pins only; never format a card. */
+    esp_err_t (*storage_mount)(const char *path);
     /* Turns the board off; returns only on failure. */
     esp_err_t (*power_off)(void);
 } muse_board_t;

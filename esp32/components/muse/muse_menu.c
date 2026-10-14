@@ -35,6 +35,7 @@
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_voice.h"
+#include "muse_music.h"
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_menu";
@@ -64,6 +65,9 @@ static const char *TAG = "muse_menu";
 typedef enum {
     ITEM_VOLUME,
     ITEM_SPEAKER,
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    ITEM_MUSIC,
+#endif
     ITEM_BRIGHTNESS,
     ITEM_MIC,
     ITEM_SLEEP,
@@ -81,6 +85,9 @@ typedef enum {
 static const char *const ITEM_NAMES[ITEM_COUNT] = {
     [ITEM_VOLUME] = "Volume",
     [ITEM_SPEAKER] = "Speaker",
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    [ITEM_MUSIC] = "SD Music",
+#endif
     [ITEM_BRIGHTNESS] = "Brightness",
     [ITEM_MIC] = "Mic gain",
     [ITEM_SLEEP] = "Auto-sleep",
@@ -98,6 +105,9 @@ static const char *const ITEM_NAMES[ITEM_COUNT] = {
 static const char *const ITEM_ACTIONS[ITEM_COUNT] = {
     [ITEM_VOLUME] = "Change",
     [ITEM_SPEAKER] = "Toggle",
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    [ITEM_MUSIC] = "Open",
+#endif
     [ITEM_BRIGHTNESS] = "Change",
     [ITEM_MIC] = "Change",
     [ITEM_SLEEP] = "Change",
@@ -124,6 +134,9 @@ typedef enum {
     VIEW_LIST,
     VIEW_STATUS,
     VIEW_BATTERY,
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    VIEW_MUSIC,
+#endif
     VIEW_POWER,
     VIEW_RESET,
 } view_t;
@@ -132,6 +145,9 @@ static QueueHandle_t s_keys;
 static volatile bool s_open;
 static view_t s_view;
 static int s_sel;
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+static unsigned s_music_sel;
+#endif
 static int s_shown_sel = -1;
 static int s_first;             /* top visible row */
 static int s_visible_rows;
@@ -206,6 +222,13 @@ static void value_text(int item, char *buf, size_t n)
     case ITEM_SPEAKER:
         strlcpy(buf, muse_settings_speaker_on() ? "On" : "Off", n);
         break;
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    case ITEM_MUSIC: {
+        muse_music_status_t music; muse_music_status(&music);
+        snprintf(buf, n, "%s", music.playing ? "Playing" : music.paused ? "Paused" : "Open");
+        break;
+    }
+#endif
     case ITEM_BRIGHTNESS:
         snprintf(buf, n, "%d%%", muse_settings_brightness());
         break;
@@ -321,6 +344,23 @@ static void refresh(void)
             select_hint(ITEM_ACTIONS[s_sel]);
             s_shown_sel = s_sel;
         }
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    } else if (s_view == VIEW_MUSIC) {
+        muse_music_status_t music; muse_music_status(&music);
+        unsigned options = music.count + 5;
+        if (s_music_sel >= options) s_music_sel = options - 1;
+        char name[MUSE_MUSIC_NAME];
+        if (s_music_sel < music.count) muse_music_name(s_music_sel, name, sizeof(name));
+        else snprintf(name, sizeof(name), "%s", s_music_sel == music.count ? "Pause / Resume" :
+            s_music_sel == music.count + 1 ? "Next track" :
+            s_music_sel == music.count + 2 ? "Stop music" :
+            s_music_sel == music.count + 3 ? "Rescan card" : "Back");
+        size_t shown = strlen(name);
+        if (shown > 70) { shown = 70; while (((unsigned char)name[shown] & 0xc0) == 0x80) --shown; }
+        snprintf(buf, sizeof(buf), "%u song(s)  %s\n\n%.*s\n\n%.40s", music.count,
+            music.playing ? "Playing" : music.paused ? "Paused" : "Stopped", (int)shown, name, music.error);
+        set_text(s_page, buf);
+#endif
     } else if (s_view == VIEW_STATUS) {
         status_text(buf, sizeof(buf));
         set_text(s_page, buf);
@@ -351,6 +391,13 @@ static void show(view_t view)
         set_text(s_hint_down, muse_board->keyboard ? "Esc Back" : "Back");
         select_hint("Back");
         break;
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    case VIEW_MUSIC:
+        set_text(s_title, "SD MUSIC");
+        set_text(s_hint_down, "Left Down / Right Up");
+        select_hint("Select");
+        break;
+#endif
     case VIEW_POWER: {
         char text[96];
         snprintf(text, sizeof(text), "Turn Muse off?\n\nPress the %s button to turn it back on.",
@@ -411,6 +458,15 @@ static void activate(int item, int direction)
     case ITEM_WIFI:
         muse_settings_set_wifi_on(!muse_settings_wifi_on());
         break;
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    case ITEM_MUSIC: {
+        muse_music_status_t music; muse_music_status(&music);
+        s_music_sel = music.paused ? music.count : 0;
+        if (!music.mounted || !music.count) muse_music_request(MUSE_MUSIC_SCAN, 0);
+        show(VIEW_MUSIC);
+        return;
+    }
+#endif
     case ITEM_INFO:
         show(VIEW_STATUS);
         return;
@@ -456,6 +512,28 @@ static void handle(muse_menu_key_t key)
             activate(s_sel, key == MUSE_MENU_LEFT ? -1 : 1);
         }
         break;
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    case VIEW_MUSIC: {
+        muse_music_status_t music; muse_music_status(&music);
+        unsigned options = music.count + 5;
+        if (s_music_sel >= options) s_music_sel = options - 1;
+        if (key == MUSE_MENU_BACK) show(VIEW_LIST);
+        else if (key == MUSE_MENU_DOWN || key == MUSE_MENU_UP) {
+            s_music_sel = (s_music_sel + (key == MUSE_MENU_DOWN ? 1 : options - 1)) % options;
+            refresh();
+        } else if (key == MUSE_MENU_SELECT) {
+            if (s_music_sel < music.count) {
+                if (muse_music_request(MUSE_MUSIC_PLAY, s_music_sel)) muse_menu_close();
+            }
+            else if (s_music_sel == music.count) muse_music_request(MUSE_MUSIC_TOGGLE, 0);
+            else if (s_music_sel == music.count + 1) muse_music_request(MUSE_MUSIC_NEXT, 0);
+            else if (s_music_sel == music.count + 2) muse_music_interrupt();
+            else if (s_music_sel == music.count + 3) muse_music_request(MUSE_MUSIC_SCAN, 0);
+            else show(VIEW_LIST);
+        }
+        break;
+    }
+#endif
     case VIEW_STATUS:
     case VIEW_BATTERY:
         if (key == MUSE_MENU_BACK || key == MUSE_MENU_LEFT ||

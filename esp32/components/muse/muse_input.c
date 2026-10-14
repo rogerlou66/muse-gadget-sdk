@@ -38,6 +38,7 @@
 #include "muse_console.h"
 #include "muse_link.h"
 #include "muse_mem.h"
+#include "muse_music.h"
 #include "muse_menu.h"
 #include "muse_settings.h"
 #if CONFIG_MUSE_HATCH
@@ -94,6 +95,9 @@ static bool update_power(void);
 
 static void power_off(void)
 {
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    muse_music_interrupt();
+#endif
     ESP_LOGI(TAG, "shutting down");
     muse_state_set_asleep(false);
     update_power();
@@ -112,6 +116,9 @@ static void power_off(void)
 
 static void set_asleep(bool asleep, const char *why)
 {
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    if (asleep) muse_music_interrupt();
+#endif
     if (asleep != muse_state_asleep()) {
         ESP_LOGI(TAG, "%s (%s)", asleep ? "sleeping" : "waking", why);
         muse_state_set_asleep(asleep);
@@ -287,6 +294,11 @@ static void finish_toggle_recording(void)
 
 static void gesture_talk_button(unsigned ev, uint32_t now)
 {
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    /* Stop on the raw press, before the 350 ms single/double decision; menu
+     * selection must still be able to pause or start music without cancelling. */
+    if ((ev & MUSE_BTN_TALK_PRESS) && !muse_menu_is_open()) muse_music_suspend();
+#endif
     /* Pairing confirmation takes precedence and consumes this physical press. */
     if ((ev & MUSE_BTN_TALK_PRESS) && muse_link_state() == MUSE_LINK_CONFIRM && muse_link_talk_press()) {
         finish_toggle_recording();
@@ -686,6 +698,26 @@ static bool console_command(char *line, bool whole)
         }
         return true;
     }
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    if (!strncmp(line, "music.", 6)) {
+        bool ok = true;
+        if (!strcmp(line, "music.scan")) ok = muse_music_request(MUSE_MUSIC_SCAN, 0);
+        else if (!strcmp(line, "music.toggle")) ok = muse_music_request(MUSE_MUSIC_TOGGLE, 0);
+        else if (!strcmp(line, "music.stop")) muse_music_interrupt();
+        else if (!strcmp(line, "music.next")) ok = muse_music_request(MUSE_MUSIC_NEXT, 0);
+        else if (!strcmp(line, "music.prev")) ok = muse_music_request(MUSE_MUSIC_PREVIOUS, 0);
+        else if (!strncmp(line, "music.play=", 11)) {
+            char *end; long track = strtol(line + 11, &end, 10);
+            ok = end != line + 11 && !*end && track >= 1 && track <= MUSE_MUSIC_SONGS &&
+                 muse_music_request(MUSE_MUSIC_PLAY, (unsigned)track - 1);
+        } else if (strcmp(line, "music.status")) ok = false;
+        muse_music_status_t music; muse_music_status(&music);
+        printf("@music {\"ok\":%s,\"mounted\":%s,\"count\":%u,\"track\":%u,\"playing\":%s,\"paused\":%s,\"error\":\"%s\"}\n",
+            ok ? "true" : "false", music.mounted ? "true" : "false", music.count, music.count ? music.track + 1 : 0,
+            music.playing ? "true" : "false", music.paused ? "true" : "false", music.error);
+        fflush(stdout); return true;
+    }
+#endif
     bool reset = !strcmp(line, "power.reset");
     if (reset || !strcmp(line, "power")) {
         if (reset) {

@@ -354,3 +354,28 @@ BOX0 recording is capped at 30 seconds (including the existing pre-roll).
 A second middle-button click still ends a recording early. Other boards retain
 their 15-second recording limit. Capture and complete-WAV buffers use the
 same BOX0 duration to avoid truncating the note before transcription.
+
+### Experimental BOX0 SD music player (hardware mount pending)
+
+The prepared player reads MP3 files from `/sdcard/music` using bounded streaming
+buffers, converts mono/stereo audio to the existing speaker format and leaves
+ASR/TTS and 30-second recording unchanged. The SD Music menu uses left/down,
+right/up and middle/select for songs, pause/resume, next, stop, rescan and Back.
+Selecting a song closes the menu so the middle button is available for talking.
+A raw middle press silences music before the single/double/hold decision: a
+single starts recording and closes the music file; a double opens the menu
+with music paused and available to resume. Sleeping and power-off stop music.
+At most 64 regular `.mp3`/`.MP3` files are listed; hidden files, symlinks and
+subdirectories are excluded. No files are written or formatted.
+
+**This is not yet a working BOX0 card reader.** Its reference firmware does not
+define the onboard TF pins; `storage_mount` must be implemented from the exact
+BOX0 schematic or verified vendor example before hardware playback can work.
+Ordinary DNESP32S3 examples use GPIO2 for SD chip-select, but BOX0 uses GPIO2
+for its power latch: do not reuse that map. Until an exact-board mount is
+provided the player reports `SD WIRING NOT CONFIGURED` and drives no SD pins.
+
+USB diagnostics: `>music.scan`, `>music.status`, `>music.play=1` (one-based
+catalog index), `>music.toggle`, `>music.next`, `>music.prev`, `>music.stop`.
+Requests are queued; poll status for completion. Hardware functionality and
+physical playback/interruption have not yet been verified.
