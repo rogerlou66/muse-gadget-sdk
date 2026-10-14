@@ -176,7 +176,7 @@ status screen.
 | Waveshare ESP32-S3-Touch-AMOLED-1.75C | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Waveshare ESP32-S3-Touch-AMOLED-1.75 | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Espressif ESP32-S3-BOX-3 | UI, touch, push-to-talk, settings, images | [BOX-3 setup](devices/esp32-s3-box-3.md) |
-| Alientek ATK-DNESP32S3-BOX0 (experimental) | UI, middle-button push-to-talk, left-button menu, images | `tools/muse/board.sh build atk-box0` |
+| Alientek ATK-DNESP32S3-BOX0 (experimental) | UI, middle-button recording/menu/sleep gestures, left Down, right Up, images | `tools/muse/board.sh build atk-box0` |
 | AIPI Lite | UI, push-to-talk, two-button menu, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Waveshare ESP32-C6-Touch-AMOLED-1.8 | UI, push-to-talk with text replies | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
 | Seeed SenseCAP Watcher | UI, push-to-talk, settings, images | see [`AGENTS.md`](AGENTS.md#boards-with-the-full-ui-by-hand) |
@@ -247,6 +247,14 @@ things you can change:
   Missing credentials or API failures retain text captions. The API key lives
   in device NVS, separately from the firmware binary; NVS encryption depends
   on the board's existing configuration.
+
+Selected upstream repairs in this fork preserve the BOX0 controls, retained-supply
+shutdown, OpenAI ASR and both TTS adapters. Audio power transitions and gain/volume
+updates are serialized; failed codec/voice initialization rests the codecs.
+Noise transport uses in-place WebSocket frames and tunnel batches. Voice turns
+retain the custom bounded image/tool waits, and a capped turn with no reply now
+reports an error. Sources: upstream `93eba80`, `eb413e7`, `9e49b35`, `0447d7a`,
+`0957983`, `cafaad4` and the oversized-reply handling in `8e613f7`.
 
 A few things worth knowing:
 

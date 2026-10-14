@@ -27,13 +27,18 @@ static int failed,finished;
 static bool complete;
 static int64_t now_us() {return clock_us;}
 static void on_dictation_end(bool) {}
-static void turn_fail(const char *) {failed++;}
+static const char *failure;
+static void turn_fail(const char *why) {failed++;failure=why;}
 static void turn_done(bool ok) {finished++;complete=ok;}
 static void log_marks() {}
 ''' + check + '''
-static void begin() {s_turn={};s_turn.phase=P_WAIT_REPLY;failed=finished=0;complete=false;}
+static void begin() {s_turn={};s_turn.phase=P_WAIT_REPLY;failed=finished=0;complete=false;failure=nullptr;}
 int main() {
     begin();clock_us=61*1000000LL;check_turn();assert(failed==1);
+    begin();clock_us=TURN_CAP_US+1;check_turn();
+    assert(failed==1&&!finished&&!strcmp(failure,"NO REPLY FROM MUSE"));
+    begin();s_turn.nmsgs=1;clock_us=TURN_CAP_US+1;check_turn();
+    assert(!failed&&finished==1&&!complete);
     begin();s_turn.agent_busy=s_turn.agent_work_seen=true;
     clock_us=120*1000000LL;check_turn();assert(!failed&&!finished);
     clock_us=240*1000000LL;check_turn();assert(!failed&&!finished);

@@ -43,6 +43,8 @@ typedef enum {
 } muse_link_state_t;
 
 /* A reply frame of a request on Link's session: see noise_ctrl_req_cb in main/noise_control.h. */
+/* The session ended because an inbound reply exceeded its buffers. */
+#define MUSE_LINK_REQ_TOO_LARGE (-2)
 typedef void (*muse_link_req_cb)(void *ctx, int status, const uint8_t *data, size_t len, bool end);
 
 typedef struct {

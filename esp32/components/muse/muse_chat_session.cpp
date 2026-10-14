@@ -1844,6 +1844,10 @@ static void check_turn(void)
     if (t - s_turn.start_us > cap) {
         ESP_LOGW(TAG, "turn hit the time cap");
         if(!text && (s_turn.agent_work_seen||s_turn.image_requested)) {turn_fail("MUSE TASK TIMED OUT");return;}
+        if (!text && !s_turn.nmsgs) {
+            turn_fail("NO REPLY FROM MUSE");
+            return;
+        }
         turn_done(false);
         return;
     }

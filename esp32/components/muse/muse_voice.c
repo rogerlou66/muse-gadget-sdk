@@ -924,6 +924,11 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
     const int stack_bytes = MUSE_AUDIO_HW_RATE > MUSE_AUDIO_RATE ? 12 * 1024 : 6144;
     if (xTaskCreatePinnedToCoreWithCaps(voice_task, "muse_voice", stack_bytes, NULL, 6, NULL, MUSE_AUDIO_CORE,
                                         MUSE_BIG_CAPS) != pdPASS) {
+        /* Initialization left the codecs open; rest them if no voice task
+         * can own their lifecycle. */
+        muse_audio_power(false);
+        muse_state_set_mode(MUSE_MODE_ERROR);
+        muse_state_set_caption("AUDIO INIT FAILED");
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;

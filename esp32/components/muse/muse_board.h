@@ -89,6 +89,12 @@ typedef struct {
     int mic_slot;           /* slot carrying the mic (0/1), or -1 to mix both */
     void (*set_mic_gain)(esp_codec_dev_handle_t mic, int db);   /* NULL: esp_codec_dev_set_in_gain */
 
+    /* Optional rails: amp on after codecs open, off before they close;
+     * codec supply on before open/init, off after close. NULL keeps the
+     * board's existing power behavior, including BOX0's retained supply. */
+    void (*audio_power)(bool on);
+    void (*codec_power)(bool on);
+
     /* Called every 10 ms from the input task (50 ms while the display is
      * paused, unless wait_buttons is set); returns MUSE_BTN_* edges. */
     unsigned (*poll_buttons)(void);

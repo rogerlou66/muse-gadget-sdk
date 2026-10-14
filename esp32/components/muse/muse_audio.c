@@ -25,6 +25,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "muse_board.h"
 #include "muse_audio_dsp.h"
@@ -39,6 +41,8 @@ static const char *TAG = "muse_audio";
 static esp_codec_dev_handle_t s_spk;
 static esp_codec_dev_handle_t s_mic;
 static bool s_open;
+/* Serialize codec power changes with volume and microphone-gain setters. */
+static SemaphoreHandle_t s_lock;
 #if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
 #include "esp_ns.h"
 #include "esp_attr.h"
@@ -65,6 +69,52 @@ static int16_t s_out_stereo[MUSE_AUDIO_HW_CHUNK * CHANNELS];
 static float s_hpf_a;
 static float s_hpf_x1, s_hpf_y1;
 
+static void lock(void)
+{
+    if (s_lock) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+    }
+}
+
+static void unlock(void)
+{
+    if (s_lock) {
+        xSemaphoreGive(s_lock);
+    }
+}
+
+static void codec_power(bool on)
+{
+    if (muse_board->codec_power) {
+        muse_board->codec_power(on);
+    }
+}
+
+/* A closed codec on a board-switched supply has no power. */
+static bool codecs_reachable(void)
+{
+    return s_open || !muse_board->codec_power;
+}
+
+static void apply_volume(int volume)
+{
+    if (s_spk && codecs_reachable()) {
+        esp_codec_dev_set_out_vol(s_spk, volume);
+    }
+}
+
+static void apply_mic_gain(int db)
+{
+    if (!s_mic || !codecs_reachable()) {
+        return;
+    }
+    if (muse_board->set_mic_gain) {
+        muse_board->set_mic_gain(s_mic, db);
+    } else {
+        esp_codec_dev_set_in_gain(s_mic, (float)db);
+    }
+}
+
 static esp_err_t open_codecs(void)
 {
     esp_codec_dev_sample_info_t fs = {
@@ -73,7 +123,11 @@ static esp_err_t open_codecs(void)
         .bits_per_sample = 16,
     };
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_spk, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open speaker");
-    ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_mic, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open mic");
+    if (esp_codec_dev_open(s_mic, &fs) != ESP_CODEC_DEV_OK) {
+        esp_codec_dev_close(s_spk);
+        ESP_LOGE(TAG, "open mic");
+        return ESP_FAIL;
+    }
     s_open = true;
 #if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
     s_capture_fir = (muse_audio_fir_t){0};
@@ -89,16 +143,34 @@ static esp_err_t open_codecs(void)
 
 esp_err_t muse_audio_init(int volume, int mic_gain_db)
 {
-    ESP_RETURN_ON_ERROR(muse_board->audio_init(&s_spk, &s_mic), TAG, "codec init failed");
-    ESP_RETURN_ON_FALSE(s_spk && s_mic, ESP_FAIL, TAG, "codec init failed");
-
-    ESP_RETURN_ON_ERROR(open_codecs(), TAG, "open codecs");
+    s_lock = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(s_lock, ESP_ERR_NO_MEM, TAG, "audio lock");
+    /* A board-switched supply goes off again on any failure: nothing will
+     * open the codecs, and the setters skip them while closed. */
+    codec_power(true);
+    esp_err_t err = muse_board->audio_init(&s_spk, &s_mic);
+    if (err == ESP_OK && !(s_spk && s_mic)) {
+        err = ESP_FAIL;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "codec init failed");
+    } else {
+        err = open_codecs();   /* logs its own failure */
+    }
+    if (err != ESP_OK) {
+        codec_power(false);
+        return err;
+    }
     muse_audio_set_volume(volume);
     muse_audio_set_mic_gain(mic_gain_db);
 #if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
     /* Standalone classic suppression needs no wake-word/model partition. */
     s_ns = ns_pro_create(10, 0, MUSE_AUDIO_RATE);
-    ESP_RETURN_ON_FALSE(s_ns, ESP_ERR_NO_MEM, TAG, "mild noise suppression init");
+    if (!s_ns) {
+        muse_audio_power(false);
+        ESP_LOGE(TAG, "mild noise suppression init");
+        return ESP_ERR_NO_MEM;
+    }
     ESP_LOGI(TAG, "enhanced audio: codec %d Hz, mic %d Hz, playback %d Hz; mild NS + bounded AGC",
              MUSE_AUDIO_HW_RATE, MUSE_AUDIO_RATE, MUSE_AUDIO_PLAY_RATE);
 #endif
@@ -113,43 +185,57 @@ esp_err_t muse_audio_init(int volume, int mic_gain_db)
 
 void muse_audio_power(bool on)
 {
+    lock();
     if (!s_spk || on == s_open) {
+        unlock();
         return;
     }
     /* The shared I2S bus gets disabled twice (once per codec), which logs a
      * harmless error. */
     esp_log_level_t lvl = esp_log_level_get("i2s_common");
     esp_log_level_set("i2s_common", ESP_LOG_NONE);
+    /* The codecs' supply comes up before they open and goes once both have
+     * closed. The amp goes on once they're open and set, and off before they
+     * close, so it never passes on their power-up or power-down. */
     if (on) {
+        codec_power(true);
         if (open_codecs() == ESP_OK) {
-            muse_audio_set_volume(muse_settings_volume());
-            muse_audio_set_mic_gain(muse_settings_mic_gain());
+            apply_volume(muse_settings_volume());
+            apply_mic_gain(muse_settings_mic_gain());
+            if (muse_board->audio_power) {
+                muse_board->audio_power(true);
+            }
+        } else {
+            /* Still closed (open_codecs closes the speaker if the mic fails)
+             * and the amp still off: take the supply down again too. The
+             * next wake tries again. */
+            codec_power(false);
         }
     } else {
+        if (muse_board->audio_power) {
+            muse_board->audio_power(false);
+        }
         esp_codec_dev_close(s_spk);
         esp_codec_dev_close(s_mic);
         s_open = false;
+        codec_power(false);
     }
     esp_log_level_set("i2s_common", lvl);
+    unlock();
 }
 
 void muse_audio_set_volume(int volume)
 {
-    if (s_spk) {
-        esp_codec_dev_set_out_vol(s_spk, volume);
-    }
+    lock();
+    apply_volume(volume);
+    unlock();
 }
 
 void muse_audio_set_mic_gain(int db)
 {
-    if (!s_mic) {
-        return;
-    }
-    if (muse_board->set_mic_gain) {
-        muse_board->set_mic_gain(s_mic, db);
-    } else {
-        esp_codec_dev_set_in_gain(s_mic, (float)db);
-    }
+    lock();
+    apply_mic_gain(db);
+    unlock();
 }
 
 static float to_db(double mean_sq)
