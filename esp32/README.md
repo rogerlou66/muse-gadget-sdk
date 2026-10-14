@@ -339,3 +339,13 @@ their upstream licenses:
 
 ESP-IDF components fetched at build time (into `managed_components/`) are
 under their own licenses.
+
+### BOX0 spoken reply style
+
+BOX0 prefixes each outgoing text/ASR-transcript chat message with a Chinese
+request for natural spoken replies, typically two or three sentences without
+Markdown, tables or mechanical lists. Original transcription captions remain
+unchanged. Requests still target the main conversation: no `session_id` is
+sent. The prefix asks for the style only on that reply and asks Muse not to
+store it as a global preference. It is a user-message instruction rather than
+a server system prompt; the prefixed message remains in shared chat history.

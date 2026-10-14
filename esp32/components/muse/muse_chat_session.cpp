@@ -68,6 +68,7 @@ extern "C" {
 #include "minimp3.h"
 #include "muse_account_api.h"
 #include "muse_link.h"
+#include "muse_mem.h"
 #include "muse_settings.h"
 #if CONFIG_MUSE_HATCH
 #include "muse_tts.h"
@@ -1264,13 +1265,37 @@ static void send_chat(const char *text, const char *modality)
 {
     s_turn.image_requested=muse_chat_image_wait(text);
     s_turn.chat_posted = true;
+    const char *message = text;
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    /* A per-request user-message instruction, not a system/global preference.
+     * Keep the original transcript for captions and image-intent detection;
+     * no session_id is sent, so this stays in Muse's main conversation. */
+    static const char prefix[] =
+        "【仅本次设备回复的表达要求】\n"
+        "这条回复将在语音设备上朗读。请使用自然、口语化的中文，像日常聊天一样直接回答。"
+        "默认用两三句话回答，不使用 Markdown、表格或机械的分点表达；"
+        "数字和符号尽量写成适合朗读的形式。用户要求详细解释时再展开。"
+        "这些要求仅适用于本次回复，不要保存为全局偏好，不要改变其他来源消息的回复风格。\n"
+        "【用户原话】\n";
+    size_t cap = sizeof(prefix) + strlen(text);
+    char *prompted = static_cast<char *>(heap_caps_malloc(cap, MUSE_BIG_CAPS));
+    if (!prompted) {
+        turn_fail("OUT OF MEMORY");
+        return;
+    }
+    snprintf(prompted, cap, "%s%s", prefix, text);
+    message = prompted;
+#endif
     cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "message", text);
-    cJSON_AddStringToObject(body, "output_modality", modality);
+    bool valid = body && cJSON_AddStringToObject(body, "message", message)
+                      && cJSON_AddStringToObject(body, "output_modality", modality);
     const char *node=muse_link_node_id();
-    if(node && node[0])cJSON_AddStringToObject(body,"device_id",node);
-    char *json = cJSON_PrintUnformatted(body);
+    if (valid && node && node[0]) valid = cJSON_AddStringToObject(body, "device_id", node);
+    char *json = valid ? cJSON_PrintUnformatted(body) : nullptr;
     cJSON_Delete(body);
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    free(prompted);
+#endif
     size_t len = json ? strlen(json) : 0;
     bool whole = len <= CHAT_PART;
     s_turn.chat_id = json ? open_stream(K_CHAT, "POST", "/chat/stream", "application/json", nullptr,
