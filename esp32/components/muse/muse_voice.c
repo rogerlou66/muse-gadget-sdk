@@ -888,6 +888,14 @@ static void voice_task(void *arg)
             bool music_reset = muse_music_take_reset();
             if (music_reset) pre_reset();
             if (music_frames) {
+                /* minimp3's per-frame scratch lives on this owner's stack.
+                 * Report the actual hardware headroom as new lows appear. */
+                static unsigned music_stack_low;
+                unsigned free_stack = uxTaskGetStackHighWaterMark(NULL);
+                if (!music_stack_low || free_stack + 1024 < music_stack_low) {
+                    music_stack_low = free_stack;
+                    ESP_LOGI(TAG, "music stack headroom: %u bytes", free_stack);
+                }
                 muse_state_poke();
                 muse_state_set_mode(MUSE_MODE_SPEAKING);
                 muse_music_status_t music;
@@ -961,7 +969,13 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
         return ESP_FAIL;
     }
     /* Stack in PSRAM if there is any (this task never writes flash) to spare internal RAM for Wi-Fi/BLE. */
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    /* The same task now decodes SD MP3. minimp3 uses about 16 KiB of frame
+     * scratch in addition to the voice/audio call chain. Keep it in PSRAM. */
+    const int stack_bytes = 32 * 1024;
+#else
     const int stack_bytes = MUSE_AUDIO_HW_RATE > MUSE_AUDIO_RATE ? 12 * 1024 : 6144;
+#endif
     if (xTaskCreatePinnedToCoreWithCaps(voice_task, "muse_voice", stack_bytes, NULL, 6, NULL, MUSE_AUDIO_CORE,
                                         MUSE_BIG_CAPS) != pdPASS) {
         /* Initialization left the codecs open; rest them if no voice task

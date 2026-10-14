@@ -46,3 +46,8 @@ reads after closing music. Mount failures never format. Rescan checks card
 status and releases stale mounts for reinsertion. Use FAT32/MBR,UTF-8 long
 filenames,root MUSIC directory,up to64files with names below128UTF-8 bytes.
 Files open read-only. exFAT is disabled in ESP-IDF FatFs.
+
+The BOX0 voice owner has a32KiBPSRAM task stack for SD decoding. Compiler
+stack-usage analysis reports17,376bytes for the music minimp3 decoder alone,
+which exceeds the previous12KiBvoice allocation. Hardware playback logs
+report stack high-water headroom to verify the budget during actual music.
