@@ -133,6 +133,15 @@ int main() {
             self.assertFalse(self.lib.muse_asr_parse(data,out,64))
             self.assertEqual(out.value,b'')
 
+    def test_wav_accepts_thirty_seconds_and_rejects_oversize(self):
+        for seconds in (20, 25, 30, 31):
+            stream = io.BytesIO()
+            with wave.open(stream, 'wb') as wav:
+                wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
+                wav.writeframes(b'\0\0' * (16000 * seconds))
+            data = stream.getvalue()
+            self.assertEqual(self.lib.muse_asr_valid_wav(data, len(data)), seconds <= 30)
+
     def test_wav_exact_rate_length_and_format(self):
         stream = io.BytesIO()
         with wave.open(stream,'wb') as wav:

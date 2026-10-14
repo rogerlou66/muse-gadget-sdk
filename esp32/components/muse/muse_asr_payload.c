@@ -51,7 +51,7 @@ bool muse_asr_text_empty(const char *json)
 }
 bool muse_asr_valid_wav(const uint8_t *p,size_t n)
 {
-    return p && n>=44+9600 && n<=44+640000 && !(n&1) && !memcmp(p,"RIFF",4) &&
+    return p && n>=44+9600 && n<=44+16000*2*30 && !(n&1) && !memcmp(p,"RIFF",4) &&
         !memcmp(p+8,"WAVEfmt ",8) && le32(p+4)==n-8 && le32(p+16)==16 &&
         p[20]==1 && p[21]==0 && p[22]==1 && p[23]==0 && le32(p+24)==16000 &&
         le32(p+28)==32000 && p[32]==2 && p[33]==0 && p[34]==16 && p[35]==0 &&
