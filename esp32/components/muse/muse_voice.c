@@ -43,7 +43,11 @@
 
 static const char *TAG = "muse_voice";
 
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+#define MAX_SECS 30
+#else
 #define MAX_SECS 15
+#endif
 #define TAIL_FRAMES (MUSE_AUDIO_RATE * 12 / 100)   /* capture lag + poll interval, stops before the release click */
 #define MAX_FRAMES (MUSE_AUDIO_RATE * MAX_SECS)
 #define MIN_HELD_FRAMES (MUSE_AUDIO_RATE * 3 / 10)   /* shorter presses are taps, not speech */

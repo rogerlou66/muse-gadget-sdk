@@ -135,7 +135,11 @@ static const char *TAG = "muse_chat_session";
  * server transcribes it. Set to 0 to stream to /api/voice/dictation instead.
  */
 #define VOICE_NOTE 1
-#define NOTE_MAX_BYTES (MIC_RATE * 2 * 20) /* 20 s of 16 kHz PCM; Muse stops at 15 */
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+#define NOTE_MAX_BYTES (MIC_RATE * 2 * 30) /* Full BOX0 recording, including pre-roll. */
+#else
+#define NOTE_MAX_BYTES (MIC_RATE * 2 * 20) /* Other boards record at most 15 seconds. */
+#endif
 #define NOTE_PART_BYTES (DICT_CHUNK_BYTES / 4 * 3)   /* staged PCM that base64s to one body chunk */
 
 #define MAX_MSGS 8

@@ -349,3 +349,8 @@ unchanged. Requests still target the main conversation: no `session_id` is
 sent. The prefix asks for the style only on that reply and asks Muse not to
 store it as a global preference. It is a user-message instruction rather than
 a server system prompt; the prefixed message remains in shared chat history.
+
+BOX0 recording is capped at 30 seconds (including the existing pre-roll).
+A second middle-button click still ends a recording early. Other boards retain
+their 15-second recording limit. Capture and complete-WAV buffers use the
+same BOX0 duration to avoid truncating the note before transcription.
