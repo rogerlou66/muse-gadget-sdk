@@ -75,6 +75,7 @@ static const char *TAG = "muse_input";
 #define CHAT_MAX (192 * 1024)  /* a typed message, assembled from "chat+=" lines */
 
 static QueueHandle_t s_queue;
+static bool (*s_console_hook)(const char *line);
 static TaskHandle_t s_input;
 static bool s_talk_down;
 static bool s_cpu_low;      /* display stopped and the CPU allowed to sleep */
@@ -649,6 +650,9 @@ static void set_face(const char *name)
  */
 static bool console_command(char *line, bool whole)
 {
+    if (whole && s_console_hook && s_console_hook(line)) {
+        return true;
+    }
 #if CONFIG_MUSE_HATCH
     if(!strcmp(line,"asr.replay=muse")) {muse_hatch_replay_note();return true;}
     if(!strcmp(line,"asr.status")) {
@@ -813,6 +817,11 @@ static void serial_task(void *arg)
             post(c == 'd' ? MUSE_PTT_DOWN : MUSE_PTT_UP, false);
         }
     }
+}
+
+void muse_input_set_console_hook(bool (*hook)(const char *line))
+{
+    s_console_hook = hook;
 }
 
 esp_err_t muse_input_start(QueueHandle_t queue)

@@ -112,6 +112,11 @@ idf.py build
 This builds for the ESP32-C5 DevKitC-1. The firmware lands in
 `build/muse-gadget.bin`.
 
+A build without a token can get one later over serial: send the line
+`>sdk_token=mgst_…` on the board's console, and it stores the token in NVS,
+answers `@sdk_token ok` and restarts with it. A stored token takes precedence
+over the build's. You can also set it from the SDK token row in Muse settings.
+
 ### 3. Flash
 
 Plug in the board and flash it:
@@ -256,6 +261,12 @@ retain the custom bounded image/tool waits, and a capped turn with no reply now
 reports an error. Sources: upstream `93eba80`, `eb413e7`, `9e49b35`, `0447d7a`,
 `0957983`, `cafaad4` and the oversized-reply handling in `8e613f7`.
 
+Further selected upstream updates (`a0f4459`, `fa07304`, `ab39b41`) add runtime
+SDK token provisioning through serial/settings, show the connected VM and
+actual paired-token state, and let `snap.py` finish slow large screenshots
+without dropping DTR on exit. BOX0 controls, power-off, independent ASR/TTS,
+30-second recording and SD MP3 playback retain their existing implementation.
+
 A few things worth knowing:
 
 This custom full-UI build can also use Qwen Cherry for narration, with the
@@ -285,9 +296,10 @@ USB diagnostics: `>asr.status` reports provider/model/language/HTTP status;
 The diagnostic WAV stays in RAM and is replaced by the next completed request.
 These tools enable a comparison using the same recording, rather than two takes.
 
-- Your SDK token ships inside the firmware, so treat it as an identifier
-  rather than a password. If it leaks, revoke it on gadgets.muse.ai, generate
-  a new one, and rebuild.
+- Your SDK token ships inside the firmware, or sits in NVS if you set it over
+  serial, so treat it as an identifier rather than a password. If it leaks,
+  revoke it on gadgets.muse.ai, generate a new one, and rebuild or send the
+  new one over serial.
 - **We strongly recommend enabling NVS encryption** if your board supports it.
   NVS stores Wi-Fi credentials and device tokens in flash; without encryption,
   anyone with physical access to the board can read them. Enable it with
