@@ -127,9 +127,6 @@ static int64_t s_last_vm_auth_refresh_attempt_us = 0;
 // Uptime of the last proactive-refresh attempt. 0 = none this boot, so the
 // first one falls due once uptime alone exceeds the interval.
 static int64_t s_last_periodic_token_refresh_us = 0;
-// The SDK token reaches Muse only in refresh bodies until apps forward it at
-// mint, so each boot of a token-bearing build attempts one refresh to report it.
-static bool s_sdk_token_report_attempted = false;
 static int64_t s_vm_auth_refresh_interval_us = VM_AUTH_REFRESH_RETRY_INTERVAL_US;
 static uint8_t s_vm_auth_refusals = 0;
 static bool s_vm_auth_refresh_pending = false;
@@ -767,6 +764,7 @@ static bool mint_and_store_device_tokens_unlocked(const char *source_token,
     int rc = vm_api_mint_device_token(source_token, identity_node_id(), &tokens);
     if (rc == 0) {
         bool ok = store_token_pair_unlocked(tokens.access_token, tokens.refresh_token);
+        if (ok) identity_note_paired_sdk_token();
         if (ok && username) store_pairing_username_unlocked(username);
         vm_device_tokens_free(&tokens);
         return ok;
@@ -788,7 +786,10 @@ static bool accept_pairing_credentials(const char *access_token,
     bool ok = false;
     if (refresh_token && *refresh_token) {
         ok = store_token_pair_unlocked(access_token, refresh_token);
-        if (ok) store_pairing_username_unlocked(username);
+        if (ok) {
+            identity_note_paired_sdk_token();
+            store_pairing_username_unlocked(username);
+        }
     } else if (!wifi_mgr_is_connected()) {
         ESP_LOGW(TAG, "cannot mint device token before WiFi is connected");
         ok = false;
@@ -874,9 +875,7 @@ static bool ensure_access_token_ready_with_gate_held(
                    >= TOKEN_PERIODIC_REFRESH_INTERVAL_US;
 #endif
 
-    bool sdk_token_report_due = identity_sdk_token() && !s_sdk_token_report_attempted;
-
-    if (!access_token_rejected && !periodic_due && !sdk_token_report_due) {
+    if (!access_token_rejected && !periodic_due) {
         // Nothing has complained about this token, so keep using it.
         ok = true;
         goto done;
@@ -889,12 +888,7 @@ static bool ensure_access_token_ready_with_gate_held(
         s_last_periodic_token_refresh_us = esp_timer_get_time();
         ESP_LOGI(TAG, "proactive device token refresh (every %d days of uptime)",
                  CONFIG_HOMEHUB_TOKEN_REFRESH_INTERVAL_DAYS);
-    } else if (sdk_token_report_due && !access_token_rejected) {
-        ESP_LOGI(TAG, "refreshing device token to report the SDK token");
     }
-    // Stamped on the attempt, like the periodic refresh, so failures don't
-    // retry on every fetch_vms.
-    if (sdk_token_report_due) s_sdk_token_report_attempted = true;
 
     vm_device_tokens_t tokens = {0};
     vm_token_refresh_method_t method = VM_TOKEN_REFRESH_NONE;
@@ -1848,19 +1842,25 @@ static cJSON *on_ws_command(
         return queue_ws_control(WS_CONTROL_SET_VM, url);
     }
 #if CONFIG_HOMEHUB_DISPLAY_COMMANDS
-    if (strcmp(command, "display.draw_url") == 0) {
-        cJSON *url = cJSON_GetObjectItem(params, "url");
+    bool draw_file = strcmp(command, "display.draw_file") == 0;
+    if (draw_file || strcmp(command, "display.draw_url") == 0) {
+        // draw_file takes a path on the VM, fetched over this session.
+        cJSON *target = cJSON_GetObjectItem(params, draw_file ? "path" : "url");
         cJSON *row = cJSON_GetObjectItem(params, "row");
-        if (!cJSON_IsString(url) || !url->valuestring || !url->valuestring[0]) {
-            return command_error("missing_param", "url is required");
+        if (!cJSON_IsString(target) || !target->valuestring || !target->valuestring[0]) {
+            return command_error("missing_param",
+                                 draw_file ? "path is required" : "url is required");
         }
         draw_url_ctx_t *ctx = calloc(1, sizeof(*ctx));
         if (!ctx) return command_error("out_of_memory", "failed to allocate");
         ctx->session_generation = session_generation;
         strncpy(ctx->request_id, request_id, sizeof(ctx->request_id) - 1);
         const char *code, *message;
-        if (!image_fetch_start(url->valuestring, cJSON_IsNumber(row) ? row->valueint : IMAGE_FETCH_DEFAULT_ROW,
-                               draw_url_done, ctx, &code, &message)) {
+        int top = cJSON_IsNumber(row) ? row->valueint : IMAGE_FETCH_DEFAULT_ROW;
+        bool started = draw_file
+            ? image_fetch_start_vm(target->valuestring, top, draw_url_done, ctx, &code, &message)
+            : image_fetch_start(target->valuestring, top, draw_url_done, ctx, &code, &message);
+        if (!started) {
             free(ctx);
             return command_error(code, message);
         }
@@ -2503,6 +2503,11 @@ void app_run(void) {
     ESP_LOGI(TAG, "  Verify:   %s", link_pairing_sign_factory_test());
     // Only the hint gadgets.muse.ai displays; the full token is never logged.
     ESP_LOGI(TAG, "  SDK token:  %.12s", identity_sdk_token() ? identity_sdk_token() : "(none)");
+    char paired_sdk_hint[IDENTITY_SDK_TOKEN_HINT_LEN + 1];
+    if (identity_sdk_token_changed_since_pairing(paired_sdk_hint, sizeof(paired_sdk_hint))) {
+        ESP_LOGW(TAG, "  Paired with SDK token %s, not this one. Pair again in the "
+                      "Muse app to use it.", paired_sdk_hint);
+    }
     ESP_LOGI(TAG, "========================");
 
     link_pairing_init(identity_node_id(), identity_device_id(), identity_mac(),

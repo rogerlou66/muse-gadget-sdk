@@ -117,6 +117,15 @@ A build without a token can get one later over serial: send the line
 answers `@sdk_token ok` and restarts with it. A stored token takes precedence
 over the build's. You can also set it from the SDK token row in Muse settings.
 
+Muse records a gadget's SDK token when the gadget pairs, and nowhere else. If
+you change the token on a paired gadget, or revoke the one it paired with,
+pair it again. On BOX0 use **Settings → Muse → Reset pairing**, then pair
+in the Muse app; this reset also forgets Wi-Fi. Other boards use their
+board-specific pairing-reset control.
+Until then it keeps the token it paired with, and once that token is revoked it
+can't reach Muse. The boot log warns when the gadget is paired with a token
+other than its current one.
+
 ### 3. Flash
 
 Plug in the board and flash it:
@@ -392,3 +401,19 @@ or erases the card. exFAT and recursive subdirectory scanning are unsupported.
 USB diagnostics: `>music.scan`, `>music.status`, `>music.play=1` (one-based
 catalog index), `>music.toggle`, `>music.next`, `>music.prev`, `>music.stop`.
 Requests are queued; poll status for completion.
+
+### VM image files
+
+The selected upstream `3880ca5` update adds `display.draw_file` with a `path`
+relative to the Muse VM file API, such as `workspace/picture.jpg`, and an
+optional `row`. It uses the existing authenticated Noise connection and bounded
+Range reads, so the image does not need a public URL. Formats and scaling
+match `display.draw_url`: baseline JPEG or raw RGB565 prepared for the panel
+with `tools/image_for_display.py`; it does not generate images itself.
+PSRAM control sessions accept up to 64 KiB frames; image buffers leave the
+existing 16 KiB DMA transmission margin.
+
+The `a8a4612` pairing repair records the SDK token hint when pairing succeeds
+and warns if the configured token later differs; it no longer refreshes
+device tokens just to report the SDK token. Pairings from older firmware
+have no recorded hint, so they cannot show this mismatch warning yet.

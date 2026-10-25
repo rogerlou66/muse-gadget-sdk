@@ -40,7 +40,7 @@ static label_t *s_link_reset_lbl=labels;
 static label_t *s_link_status=labels+6;
 static int64_t s_link_reset_armed_us;
 static int64_t s_sdk_token_bad_us,clock_us;
-static bool paired,explicit_token;
+static bool paired,explicit_token,token_changed;
 static char configured_vm[64];
 static const char *sdk;
 static muse_hatch_status_t state;
@@ -53,6 +53,7 @@ static void muse_settings_hatch_host(char *out) {strcpy(out,"test-server");}
 static void muse_settings_hatch_vm(char *out) {strcpy(out,configured_vm);}
 static unsigned muse_settings_hatch_token_len(void) {return explicit_token?48:0;}
 static bool muse_link_hatch_linked(void) {return paired;}
+static bool muse_link_sdk_token_changed(void) {return token_changed;}
 static int muse_link_state(void) {return 0;}
 static const char *muse_link_state_name(int state) {(void)state;return "Online";}
 static const char *muse_link_sdk_token(void) {return sdk;}
@@ -65,6 +66,8 @@ int main(void) {
  assert(!strcmp(s_hatch_token->value,"Not set"));
  assert(!strcmp(s_hatch_sdk_token->value,"Not set"));
  paired=true;tick_hatch();assert(!strcmp(s_hatch_token->value,"Set"));
+ token_changed=true;tick_hatch();assert(strstr(s_link_status->value,"paired with another SDK token"));
+ token_changed=false;tick_hatch();assert(!strstr(s_link_status->value,"another SDK token"));
  explicit_token=true;tick_hatch();assert(!strcmp(s_hatch_token->value,"Set here"));
  strcpy(configured_vm,"override-vm");tick_hatch();assert(!strcmp(s_hatch_vm->value,"override-vm"));
  sdk="mgst_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
