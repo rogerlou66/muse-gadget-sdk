@@ -14,16 +14,20 @@
 
 """How reply captions wrap to the screen's page (muse_chat_text.c): words stay
 whole, and CJK, which has no spaces, breaks between characters but never puts
-closing punctuation at the start of a line."""
+closing punctuation at the start of a line. Letters the ASCII fonts lack show
+as their plain ones (muse_text.c), or with CONFIG_MUSE_LATIN_FONT, accented
+ones as they are."""
 
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import tempfile
 import unittest
+import unicodedata
 from pathlib import Path
 
 
@@ -112,6 +116,61 @@ class CaptionWrapTest(unittest.TestCase):
 
     def test_mixed_text_breaks_at_spaces_or_between_cjk(self) -> None:
         self.assertEqual(self.wrap("Muse 说 hello world", 8), ["Muse 说", "hello", "world"])
+
+    def page(self, text: str) -> str:
+        proc = subprocess.run(
+            [str(self.binary), "page"], input=text.encode(), capture_output=True, check=True
+        )
+        return proc.stdout.decode().strip()
+
+    def test_hangul_takes_the_cjk_font_and_page(self) -> None:
+        for text in (
+            "\u1100",                                       # a lone leading jamo, as the font draws it
+            unicodedata.normalize("NFD", "안녕하세요"),   # conjoining jamo, drawn uncomposed
+            "안녕하세요",                                  # syllables
+            "ㅎㅎ",                                        # compatibility jamo
+            "Muse 안녕",
+        ):
+            self.assertEqual(self.page(text), "cjk cjk", repr(text))
+        self.assertEqual(self.page("hello there"), "latin latin")
+
+    def test_hangul_fillers_are_dropped(self) -> None:
+        # Blank characters that the CJK font draws as boxes.
+        self.assertEqual(self.shown("\u115f\u1160\u3164한\uffa0글"), "한글")
+
+    def shown(self, text: str) -> str:
+        proc = subprocess.run(
+            [str(self.binary), "ascii"], input=text.encode(), capture_output=True, check=True
+        )
+        return proc.stdout.decode()
+
+    def test_vietnamese_shows_its_plain_letters(self) -> None:
+        self.assertEqual(
+            self.shown("Thời tiết Hà Nội hôm nay đẹp, được không?"),
+            "Thoi tiet Ha Noi hom nay dep, duoc khong?",
+        )
+        # Every Vietnamese letter, upper and lower case, decomposed or not.
+        letters = "".join(map(chr, range(0x1EA0, 0x1EFA))) + "ƠơƯưĐđ"
+        plain = "".join(unicodedata.normalize("NFD", c)[0] for c in letters).replace("Đ", "D").replace("đ", "d")
+        self.assertEqual(self.shown(letters), plain)
+        self.assertEqual(self.shown(unicodedata.normalize("NFD", letters)), plain)
+
+    def test_the_latin_font_keeps_accented_letters(self) -> None:
+        def latin(text: str) -> str:
+            proc = subprocess.run(
+                [str(self.binary), "latin"], input=text.encode(), capture_output=True, check=True
+            )
+            return proc.stdout.decode()
+
+        self.assertEqual(latin("\u201cThời tiết\u201d \u2014 Hà Nội đẹp"), '1:"Thời tiết" -- Hà Nội đẹp')
+        self.assertEqual(latin("plain \u2026"), "0:plain ...")
+        # Every letter a caption keeps, and the plain caption doesn't, is in the font.
+        every = "".join(map(chr, range(0xC0, 0x1EFA)))
+        kept = {ord(c) for c in latin(every)} - {ord(c) for c in self.shown(every)}
+        font = (ROOT / "components" / "muse" / "fonts" / "muse_font_latin_16.c").read_text(encoding="utf-8")
+        has = {int(cp, 16) for cp in re.findall(r"/\* U\+([0-9A-F]+) ", font)}
+        self.assertLessEqual(set(range(0x1EA0, 0x1EFA)) | {0x1A0, 0x1A1, 0x1AF, 0x1B0, 0x110, 0x111}, kept)
+        self.assertEqual(sorted(kept - has), [])
 
 
 if __name__ == "__main__":

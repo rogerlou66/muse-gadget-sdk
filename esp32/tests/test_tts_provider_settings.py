@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class ProviderSettings(unittest.TestCase):
     def test_credentials_region_speed_and_provider_round_trip(self):
         source=(ROOT/'components/muse/muse_settings.c').read_text()
-        setters=source[source.index('static esp_err_t set_speech_key('):source.index('/* Home Link owns the saved networks')]
+        setters=source[source.index('static esp_err_t set_speech_key('):source.index('bool muse_settings_voice_notes(void)')]
         getters='\n'.join(l for l in source.splitlines() if l.startswith(('bool muse_settings_tts_configured','bool muse_settings_openai_configured')))
         code='''
 #include <assert.h>

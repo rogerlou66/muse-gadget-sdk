@@ -28,6 +28,7 @@
 #include "muse_input.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#include "muse_text.h"
 #include "muse_ui.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
@@ -69,6 +70,9 @@ void muse_app_run(const muse_board_t *board)
     muse_settings_set_listener(on_setting);
     muse_state_init();
     muse_battery_init();
+#if CONFIG_MUSE_LATIN_FONT
+    muse_text_keep_latin();   /* before the first caption, so it keeps its accents */
+#endif
     muse_state_set_caption("WAKING UP...");
     ESP_ERROR_CHECK(muse_ui_start());
     ESP_LOGI(TAG, "UI built: free internal %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));

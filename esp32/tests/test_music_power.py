@@ -30,6 +30,8 @@ typedef int esp_err_t;
 static int s_input=1,interrupts,notifications,wifi,shutdown;
 static bool sleeping;
 static void muse_music_interrupt(void) {interrupts++;}
+static void muse_voice_shutdown(int wait_ms) {assert(wait_ms==3000);}
+static void muse_voice_cancel_shutdown(void) {}
 static bool muse_state_asleep(void) {return sleeping;}
 static void muse_state_set_asleep(bool on) {sleeping=on;}
 static void xTaskNotifyGive(int task) {assert(task==1);notifications++;}

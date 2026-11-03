@@ -16,7 +16,7 @@ class MusicControl(unittest.TestCase):
             subprocess.run([ffmpeg,'-loglevel','error','-f','lavfi','-i','sine=frequency=440:sample_rate=44100:duration=1','-codec:a','libmp3lame',str(a)],check=True)
             shutil.copy(a,directory/'b.MP3');(directory/'folder.mp3').mkdir()
             shutil.copy(a,directory/'.hidden.mp3');(directory/'link.mp3').symlink_to(a)
-            (p/'sdkconfig.h').write_text('#define CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0 1\n')
+            (p/'sdkconfig.h').write_text('#define CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0 1\n#define CONFIG_MUSE_REALTIME_VOICE 1\n')
             (p/'engine.inc').write_text('\n'.join(l for l in (ROOT/'components/muse/muse_music.c').read_text().splitlines()
                 if not l.startswith(('#include "muse_', '#include "esp_', '#include "freertos/'))))
             prefix=r'''
@@ -40,7 +40,9 @@ class MusicControl(unittest.TestCase):
 #define portEXIT_CRITICAL(m) pthread_mutex_unlock(m)
 typedef int esp_err_t;
 static bool fail_alloc,fail_mount;
-static int mounts;
+static int mounts,hangups;
+static bool call_active;
+static void muse_voice_request_end_call(void) {if(call_active)hangups++;}
 static void *heap_caps_calloc(size_t n,size_t sz,int caps) {(void)caps;return fail_alloc?NULL:calloc(n,sz);}
 typedef struct {unsigned count,head,tail;size_t item;unsigned char bytes[1024];} queue_t;
 typedef queue_t *QueueHandle_t;
@@ -67,7 +69,8 @@ int main(void) {
  board.storage_mount=mount;fail_mount=true;command(MUSE_MUSIC_SCAN,0);assert(!s->status.mounted&&mounts==1);
  fail_mount=false;command(MUSE_MUSIC_SCAN,0);assert(s->status.mounted&&s->status.count==2&&!strcmp(s->names[0],"a.mp3"));
  char name[128];muse_music_name(1,name,sizeof(name));assert(!strcmp(name,"b.MP3"));
- command(MUSE_MUSIC_PLAY,0);assert(s_file&&s->status.playing&&muse_music_take_reset());
+ call_active=true;command(MUSE_MUSIC_PLAY,0);assert(hangups==1);call_active=false;
+ assert(s_file&&s->status.playing&&muse_music_take_reset());
  command(MUSE_MUSIC_TOGGLE,0);assert(s->status.paused&&!s->status.playing&&!poll());
  command(MUSE_MUSIC_TOGGLE,0);assert(!s->status.paused&&s->status.playing&&poll());
  /* A raw press silences without destroying a double-click menu's resume. */

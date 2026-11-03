@@ -41,17 +41,31 @@ if(CONFIG_MUSE_ENABLED)
         "muse_text.c"
         "muse_keypad.c"
         "muse_lv_mem.c"
+        "muse_lang.c"
         "muse_link.c"
         "muse_ble.c")
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_tts.c" "muse_tts_payload.c" "muse_qwen_tts.c" "muse_qwen_payload.c" "muse_asr.c" "muse_asr_payload.c")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
+        if(CONFIG_MUSE_REALTIME_VOICE)
+            list(APPEND srcs "muse_voice_call.cpp" "muse_voice_call_core.c")
+        endif()
     else()
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
     endif()
     list(APPEND srcs "muse_chat_text.c")
-    if(CONFIG_MUSE_CJK_FONT)
-        list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
+    if(CONFIG_MUSE_CJK_FONT_NOTO)
+        list(APPEND srcs "fonts/muse_font_cjk_noto_16.c")   # captions' CJK fallback
+    elseif(CONFIG_MUSE_CJK_FONT)
+        list(APPEND srcs "fonts/muse_font_cjk_16.c")
+    endif()
+    if(CONFIG_MUSE_LATIN_FONT)
+        list(APPEND srcs "fonts/muse_font_latin_16.c")   # captions with accented letters
+    endif()
+    if(CONFIG_MUSE_UI_LANG_VI)
+        # Montserrat's Vietnamese letters, for the menu and the pairing card
+        list(APPEND srcs "fonts/muse_font_vi_12.c" "fonts/muse_font_vi_14.c"
+                         "fonts/muse_font_vi_20.c" "fonts/muse_font_vi_28.c")
     endif()
     # Your own character (tools/muse/AVATAR_RECIPE.md) stands in for the default
     # avatar when avatar/muse_pixel.c exists here; this avatar/ is gitignored. The
@@ -103,6 +117,9 @@ elseif(CONFIG_HOMEHUB_VOICE)
     # voice_muse_chat.c stands in for the Muse settings, Wi-Fi and Link hooks.
     list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_chat_text.c" "muse_text.c")
     list(APPEND embed "test_reply.mp3")
+    if(CONFIG_MUSE_REALTIME_VOICE)
+        list(APPEND srcs "muse_voice_call.cpp" "muse_voice_call_core.c")
+    endif()
 endif()
 
 set(muse_priv_requires

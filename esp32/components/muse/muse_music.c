@@ -3,6 +3,9 @@
 #include "muse_music_file.h"
 #include "muse_audio.h"
 #include "muse_board.h"
+#if CONFIG_MUSE_REALTIME_VOICE
+#include "muse_voice.h"
+#endif
 #include "muse_mem.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -79,7 +82,14 @@ bool muse_music_request(muse_music_action_t action, unsigned track)
     portENTER_CRITICAL(&s_lock);
     QueueHandle_t queue = s_commands;
     portEXIT_CRITICAL(&s_lock);
-    return queue && xQueueSend(queue, &cmd, 0) == pdTRUE;
+    bool queued = queue && xQueueSend(queue, &cmd, 0) == pdTRUE;
+#if CONFIG_MUSE_REALTIME_VOICE
+    if (queued && (action == MUSE_MUSIC_PLAY || action == MUSE_MUSIC_TOGGLE ||
+                   action == MUSE_MUSIC_NEXT || action == MUSE_MUSIC_PREVIOUS)) {
+        muse_voice_request_end_call(); /* playback starts only after the call owner exits */
+    }
+#endif
+    return queued;
 }
 void muse_music_suspend(void)
 {

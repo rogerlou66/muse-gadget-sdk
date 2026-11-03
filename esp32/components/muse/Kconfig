@@ -93,6 +93,7 @@ menu "Muse"
     config MUSE_ENABLED
         bool
         default y if !MUSE_BOARD_NONE
+        select HOMEHUB_DAEMON_REQUESTS   # voice notes and chat over Link's session
 
     # Always defined, unlike the target-dependent board options, so
     # idf_component.yml rules can select each board's managed components.
@@ -140,17 +141,60 @@ menu "Muse"
             Leave disabled to build without camera support.
 
     config MUSE_CJK_FONT
-        bool "Show Chinese and Japanese in captions"
+        bool "Show Chinese, Japanese and Korean in captions"
         depends on MUSE_ENABLED
         default n
         help
             Captions fall back to GNU Unifont's 16x16 bitmaps for CJK
-            punctuation, kana, the CJK Unified Ideographs and fullwidth
-            forms that the ASCII caption font lacks. Small screens, whose
-            captions are two lines of 8 px text, show a reply with CJK in it
-            one 16 px line at a time. Takes about 850 KB of flash and no RAM.
-            Without it those characters show as boxes. Hangul isn't
-            included.
+            punctuation, kana, the CJK Unified Ideographs, fullwidth forms,
+            Hangul jamo and Hangul syllables that the ASCII caption font
+            lacks. Small screens, whose captions are two lines of 8 px
+            text, show a reply with CJK in it one 16 px line at a time.
+            Takes about 1.2 MB of flash and no RAM. Without it those
+            characters show as boxes.
+
+    config MUSE_CJK_FONT_NOTO
+        bool "Draw CJK captions with Noto Sans SC instead of Unifont"
+        depends on MUSE_CJK_FONT
+        default n
+        help
+            Anti-aliased Noto Sans SC Medium at 16 px in place of Unifont's
+            1-bit bitmaps, in the same 16 px cell. Covers the 6763 hanzi of
+            GB2312 rather than every CJK Unified Ideograph, and no Hangul:
+            rarer characters and Korean show as boxes. Takes about 910 KB of
+            flash, against about 1.2 MB.
+
+    config MUSE_LATIN_FONT
+        bool "Show Vietnamese and other accented letters in captions"
+        depends on MUSE_ENABLED && !MUSE_UI_FREEINK
+        default n
+        help
+            Without it, captions show accented Latin letters as their plain
+            ones. With it, a caption with any in it (Latin-1, Latin
+            Extended-A, the horned O and U, and Vietnamese's U+1EA0-1EF9)
+            shows in GNU Unifont's 8x16 bitmaps, the whole caption in that
+            one font. Small screens show such a caption one 16 px line at a
+            time. Takes about 10 KB of flash and no RAM.
+
+    choice MUSE_UI_LANGUAGE
+        prompt "Language of the screen's own text"
+        depends on MUSE_ENABLED && !MUSE_UI_FREEINK
+        default MUSE_UI_LANG_EN
+        help
+            The state label ("READY") and the captions the firmware shows
+            itself ("CAN'T REACH MUSE"). Muse's replies are in whatever
+            language you speak to it, and the serial console stays in
+            English for the tools that read it. The button menu and the
+            pairing card are translated; the touch boards' settings pages
+            aren't yet.
+
+        config MUSE_UI_LANG_EN
+            bool "English"
+
+        config MUSE_UI_LANG_VI
+            bool "Vietnamese"
+            select MUSE_LATIN_FONT
+    endchoice
 
     config MUSE_JC3248W535_MIC_GPIO
         int "JC3248W535: GPIO for an external I2S mic's data (SD) line"
@@ -176,5 +220,63 @@ menu "Muse"
             muse_chat_session.cpp is where a TTS API of your own can speak
             them. Needs PSRAM. Without it, voice notes go over Home Link's own
             session to its paired VM and replies are shown as text.
+
+    config MUSE_REALTIME_VOICE
+        bool "Live voice calls with Muse (experimental)"
+        depends on (MUSE_HATCH || HOMEHUB_VOICE) && SPIRAM
+        default n
+        help
+            A tap on the talk button starts a live voice call with Muse over
+            the voice session; the next press hangs up. Holding the button
+            still sends a voice note. On the StopWatch, holding yellow talks
+            in a call instead, blue hangs up, and voice notes are a Sound
+            setting. The mic is shut while Muse is talking
+            unless the board's audio chip confirms echo cancellation (the
+            Home Assistant Voice PE's XMOS), so you take turns. The call
+            also ends when Muse ends it, when nothing has been said or
+            played for the idle limit, or at the length limit. Muse's VM
+            has to accept voice calls from this gadget's credentials.
+
+if MUSE_REALTIME_VOICE
+
+    config MUSE_REALTIME_VOICE_APP_ID
+        string "App ID the voice session connects as"
+        default "hatch-web"
+        help
+            Sent as app_id when the voice session connects, which is where
+            Muse's VM takes the app identity for every request on that
+            connection: calls, and voice notes and typed messages too (it
+            drops a per-request x-app-id). A call is refused without one. A
+            positive 64-bit app ID, or "hatch-web", the web app's. Empty
+            sends none. Builds without calls send none either.
+
+    config MUSE_REALTIME_VOICE_IDLE_S
+        int "Hang up after this many quiet seconds"
+        range 15 1800
+        default 45
+        help
+            Nothing said and nothing audible from Muse for this long ends
+            the call. The server may enforce a shorter idle limit.
+
+    config MUSE_REALTIME_VOICE_MAX_S
+        int "Longest call, in seconds"
+        range 60 7200
+        default 900
+
+    config MUSE_REALTIME_VOICE_GREETING
+        bool "Muse says hello when a call starts"
+        default n
+
+    config MUSE_REALTIME_VOICE_AEC_DUPLEX
+        bool "Keep the mic open while Muse talks if echo is cancelled"
+        depends on HOMEHUB_VOICE
+        default y
+        help
+            On the Voice PE, when the XMOS reports at start-up that its
+            output is echo-cancelled, the call is full duplex and you can
+            talk over Muse. Otherwise, and on other boards, the mic is shut
+            while Muse is audibly talking and for a moment after.
+
+endif
 
 endmenu

@@ -48,6 +48,11 @@ extern "C" {
 #define MUSE_BTN_RIGHT        (1u << 7)
 #define MUSE_BTN_ENTER        (1u << 8)
 #define MUSE_BTN_ESCAPE       (1u << 9)
+#define MUSE_BTN_POWER_PRESS (1u << 10)
+#define MUSE_BTN_POWER_RELEASE (1u << 11)
+#define MUSE_BTN_POWER_LONG (1u << 12)
+#define MUSE_BTN_SPEAKER_PRESS (1u << 13)
+#define MUSE_BTN_SPEAKER_RELEASE (1u << 14)
 
 /* Where a button's icon goes on screen: beside the button, inside the panel. */
 typedef struct {
@@ -58,12 +63,18 @@ typedef struct {
 typedef struct {
     const char *name;
     int width, height;
+    bool epaper;
+    const char *speaker_button;
+    const char *power_button;
+    esp_err_t (*mic_init)(void);
+    bool rim_controls;       /* optional dedicated controls; false on BOX0 */
     bool round;             /* circular panel: keep content inside the circle */
     bool touch;             /* no touch: no settings screen, set up over BLE */
     float diagonal_in;      /* screen size; under 2" typing uses a keypad with bigger keys */
     bool keyboard;          /* dedicated menu navigation keys */
     bool talk_gestures;     /* single toggles recording, double opens menu, long sleeps */
     const char *talk_button;    /* where the buttons are, for captions: "top" */
+    const char *wake_button; /* optional wake-key name */
     const char *aux_button;     /* "bottom" */
     muse_button_hint_t talk_hint;   /* mic icon; the menu's hints follow both */
     muse_button_hint_t aux_hint;    /* power or menu icon; left out, there's none */
