@@ -474,3 +474,17 @@ This selected integration also adds bounded inbound draining/TCP_NODELAY,
 UTF-8-safe long captions, turn-aware sleep, transient hints, BLE/USB repairs,
 Hangul captions, optional Vietnamese UI/fonts and compact settings layouts.
 The UI remains English by default with Chinese/Japanese/Korean captions.
+
+Physical qualification on BOX0 (2026-11-03): the device's authenticated
+control connection and Muse chat session connect. Its VM currently rejects
+`/voice/realtime` with HTTP 404 and acknowledges end-call cleanup, so live
+conversation is not yet qualified on this account/VM. The realtime entry
+remains enabled at the owner's request; there is no automatic note fallback.
+Independent ASR implementation is retained pending a successful live-call
+test. Local MP3 playback, navigation and screen sleep/wake were confirmed.
+
+The Muse connection reuses an authenticated current-VM credential snapshot
+before falling back to an NVS lookup worker, avoiding a temporary 8 KiB
+internal task stack when RAM is fragmented. Explicit other-VM selection
+still uses the lookup path. BOX0 draws with two 16-row DMA buffers to leave
+15 KiB more internal memory for network traffic.

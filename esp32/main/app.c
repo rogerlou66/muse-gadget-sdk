@@ -2300,12 +2300,19 @@ static void hatch_vm_task(void *arg) {
 
 bool app_hatch_vm_credentials(const char *want_vm, char *vm_id, size_t id_cap,
                               char *vm_name, size_t name_cap, char **vm_token) {
+    /* The control session already authenticated this VM. Avoid an 8 KiB
+     * temporary internal-stack lookup on RAM-constrained audio boards. */
+    if (noise_ctrl_copy_vm_credentials(want_vm, vm_id, id_cap, vm_token)) {
+        if (vm_name && name_cap) vm_name[0] = '\0';
+        return true;
+    }
     hatch_vm_request_t req = {
         .want_vm = want_vm, .vm_id = vm_id, .id_cap = id_cap,
         .vm_name = vm_name, .name_cap = name_cap,
         .waiter = xTaskGetCurrentTaskHandle(),
     };
     if (xTaskCreate(hatch_vm_task, "muse_vm", 8192, &req, 4, NULL) != pdPASS) {
+        ESP_LOGW(TAG, "Muse VM lookup: no internal stack memory");
         return false;
     }
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);

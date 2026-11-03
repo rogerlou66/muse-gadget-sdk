@@ -59,6 +59,11 @@ typedef cJSON *(*noise_ctrl_command_cb)(const char *command, cJSON *params,
 void noise_ctrl_init(const char *node_id, const char *display_name,
                      noise_ctrl_status_cb on_status);
 
+/* Copy the authenticated current VM credentials without NVS or another task.
+ * An explicit different VM is refused. Caller frees *token on success. */
+bool noise_ctrl_copy_vm_credentials(const char *want_vm, char *vm_id,
+                                    size_t id_cap, char **token);
+
 void noise_ctrl_set_command_cb(noise_ctrl_command_cb cb);
 
 // Called from the session task with the agent's name (GET /identity) once per

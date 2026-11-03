@@ -2532,6 +2532,32 @@ extern "C" bool noise_ctrl_reconnect(const char *network_ssid) {
     return ok;
 }
 
+extern "C" bool noise_ctrl_copy_vm_credentials(const char *want_vm, char *vm_id,
+                                              size_t id_cap, char **token) {
+    if (token) *token = nullptr;
+    if (!token || !vm_id || !id_cap || !s_connect_mutex || !s_connected) return false;
+    if (xSemaphoreTake(s_connect_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+    bool ok = false;
+    if (s_connected && s_vm_id[0] && s_auth_token && s_auth_token[0] &&
+        strlen(s_vm_id) < id_cap &&
+        (!want_vm || !want_vm[0] || !strcmp(want_vm, s_vm_id))) {
+        size_t bytes = strlen(s_auth_token) + 1;
+#if CONFIG_SPIRAM
+        char *copy = static_cast<char *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+        char *copy = static_cast<char *>(malloc(bytes));
+#endif
+        if (copy) {
+            memcpy(copy, s_auth_token, bytes);
+            strlcpy(vm_id, s_vm_id, id_cap);
+            *token = copy;
+            ok = true;
+        }
+    }
+    xSemaphoreGive(s_connect_mutex);
+    return ok;
+}
+
 extern "C" void noise_ctrl_disconnect(void) {
     if (!s_connect_mutex) return;
     xSemaphoreTake(s_connect_mutex, portMAX_DELAY);

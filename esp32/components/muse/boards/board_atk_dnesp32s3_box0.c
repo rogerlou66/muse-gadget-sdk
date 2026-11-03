@@ -56,7 +56,9 @@ static const char *TAG = "board";
 #define LCD_DC GPIO_NUM_38
 #define LCD_RST GPIO_NUM_NC
 #define LCD_BL GPIO_NUM_42
-#define DRAW_BUF_LINES 32
+/* Two internal DMA buffers. Half-height frees 15 KiB for Wi-Fi/Noise/calls
+ * while keeping the same 240x240 panel and double-buffered rendering. */
+#define DRAW_BUF_LINES 16
 
 #define I2C_SDA GPIO_NUM_11
 #define I2C_SCL GPIO_NUM_12
