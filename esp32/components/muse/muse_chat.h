@@ -114,6 +114,9 @@ muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap);
  */
 bool muse_hatch_turn_caption(size_t played, char *out, size_t cap);
 
+/* Optional pixel-width measurement for caption pagination. */
+void muse_chat_set_caption_px(int width_px, int (*glyph_px)(uint32_t letter, uint32_t next));
+
 /* Reply speech as mono at MUSE_AUDIO_PLAY_RATE (ATK 48 kHz, others 16 kHz).
  * Waits up to wait_ms for some; returns frames read. */
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms);

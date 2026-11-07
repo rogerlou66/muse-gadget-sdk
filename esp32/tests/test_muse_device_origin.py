@@ -42,7 +42,7 @@ static bool send_body(int,const uint8_t *bytes,size_t n,bool) {
 static void disconnect(const char *) {}
 static void turn_fail(const char *) {failures++;}
 ''' + fn + r'''
-static void verify(const char *original) {
+static void verify(const char *original, bool spoken = true) {
     cJSON *j=cJSON_Parse(received.c_str());assert(j);
     const char *message=cJSON_GetStringValue(cJSON_GetObjectItem(j,"message"));assert(message);
 #if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
@@ -57,22 +57,25 @@ static void verify(const char *original) {
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(j,"output_modality")),"text"));
     if(node)assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(j,"device_id")),node));
     else assert(!cJSON_GetObjectItem(j,"device_id"));
+    if (spoken) assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(j,"device")),MUSE_CHAT_SPOKEN_DEVICE));
+    else assert(!cJSON_GetObjectItem(j,"device"));
     assert(s_turn.body_sent==received.size());cJSON_Delete(j);
 }
 static void *no_memory(size_t) {return nullptr;}
 int main() {
-    node="homelink-test";send_chat("画一只猫","text");verify("画一只猫");
+    node="homelink-test";send_chat("画一只猫","text",true);verify("画一只猫");
     assert(s_turn.image_requested);
-    node=nullptr;send_chat("今天\"天气\"如何？\n用一句话回答。","text");
+    node=nullptr;send_chat("今天\"天气\"如何？\n用一句话回答。","text",true);
     verify("今天\"天气\"如何？\n用一句话回答。");assert(!s_turn.image_requested);
+    send_chat("typed text","text",false);verify("typed text",false);
     std::string long_text(8192,'x');long_text+="末尾中文";
-    send_chat(long_text.c_str(),"text");verify(long_text.c_str());assert(chunks>=3);
+    send_chat(long_text.c_str(),"text",true);verify(long_text.c_str());assert(chunks>=3);
     int before=requests;
 #if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-    fail_prefix=true;send_chat("测试","text");assert(failures==1&&requests==before);fail_prefix=false;
+    fail_prefix=true;send_chat("测试","text",true);assert(failures==1&&requests==before);fail_prefix=false;
 #endif
     cJSON_Hooks hooks={no_memory,free};cJSON_InitHooks(&hooks);
-    send_chat("测试","text");assert(failures>0&&requests==before);
+    send_chat("测试","text",true);assert(failures>0&&requests==before);
     cJSON_InitHooks(nullptr);
     return 0;
 }
