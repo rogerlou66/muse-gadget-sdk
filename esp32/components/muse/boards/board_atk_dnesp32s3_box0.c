@@ -56,9 +56,10 @@ static const char *TAG = "board";
 #define LCD_DC GPIO_NUM_38
 #define LCD_RST GPIO_NUM_NC
 #define LCD_BL GPIO_NUM_42
-/* Two internal DMA buffers. Half-height frees 15 KiB for Wi-Fi/Noise/calls
- * while keeping the same 240x240 panel and double-buffered rendering. */
-#define DRAW_BUF_LINES 16
+/* Two eight-row internal DMA buffers save another 7.5 KiB over sixteen rows.
+ * ESP-IDF 6.0.3 needs that headroom to clear the 16 KiB Noise TX reserve after
+ * audio/session startup; keep the 240x240 panel and double-buffered rendering. */
+#define DRAW_BUF_LINES 8
 
 #define I2C_SDA GPIO_NUM_11
 #define I2C_SCL GPIO_NUM_12
