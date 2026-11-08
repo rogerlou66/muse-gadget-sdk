@@ -36,31 +36,6 @@
 #define MUSE_TOKEN_MAX 1023
 
 #define MUSE_MIC_GAIN_MAX 36      /* dB; ES7210 PGA, applied in 3 dB steps */
-#define MUSE_TTS_KEY_MAX 511
-#define MUSE_TTS_MODEL_MAX 63
-#define MUSE_TTS_VOICE_MAX 31
-typedef struct {
-    bool on;
-    char key[MUSE_TTS_KEY_MAX + 1];
-    char model[MUSE_TTS_MODEL_MAX + 1];
-    char voice[MUSE_TTS_VOICE_MAX + 1];
-    uint16_t speed_pct; /* 25..400; 100 is normal speech speed */
-    bool qwen; /* provider selection; key/model/voice above remain OpenAI's */
-    char qwen_key[MUSE_TTS_KEY_MAX + 1];
-    char qwen_region[16];
-    char qwen_model[MUSE_TTS_MODEL_MAX + 1];
-    char qwen_voice[MUSE_TTS_VOICE_MAX + 1];
-} muse_tts_config_t;
-
-typedef struct {
-    bool on; /* false: Muse voice notes; true: independent OpenAI transcription */
-    char model[64];
-    char language[16];
-    char prompt[256];
-} muse_asr_config_t;
-void muse_settings_asr_config(muse_asr_config_t *out);
-esp_err_t muse_settings_set_asr_option(const char *name, const char *value);
-
 typedef enum {
     MUSE_SETTING_VOLUME,
     MUSE_SETTING_SPEAKER,
@@ -88,14 +63,6 @@ enum { MUSE_TEXT_SMALL, MUSE_TEXT_MEDIUM, MUSE_TEXT_LARGE };
 int muse_settings_text_size(void);
 bool muse_settings_wifi_on(void);
 bool muse_settings_ble_on(void);
-bool muse_settings_tts_on(void);
-bool muse_settings_tts_configured(void);
-bool muse_settings_openai_configured(void);
-void muse_settings_tts_config(muse_tts_config_t *out);
-esp_err_t muse_settings_set_tts_key(const char *key, bool append);
-esp_err_t muse_settings_set_qwen_key(const char *key, bool append);
-esp_err_t muse_settings_set_tts_option(const char *name, const char *value);
-void muse_settings_set_tts_on(bool on);
 /* StopWatch: false selects realtime PTT; true selects voice notes only. */
 bool muse_settings_voice_notes(void);
 void muse_settings_set_voice_notes(bool on);

@@ -44,8 +44,6 @@
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
 #if CONFIG_MUSE_HATCH
-#include "muse_tts.h"
-#include "muse_asr.h"
 #include "muse_chat_priv.h"
 #endif
 #include "muse_state.h"
@@ -771,43 +769,6 @@ static void set_face(const char *name)
 static bool console_command(char *line, bool whole)
 {
     if (whole && s_console_hook && s_console_hook(line)) {
-        return true;
-    }
-#if CONFIG_MUSE_HATCH
-    if(!strcmp(line,"asr.replay=muse")) {muse_hatch_replay_note();return true;}
-    if(!strcmp(line,"asr.status")) {
-        muse_asr_config_t cfg;muse_settings_asr_config(&cfg);
-        printf("@asr {\"provider\":\"%s\",\"model\":\"%s\",\"language\":\"%s\",\"configured\":%s,\"http\":%d}\n",
-            cfg.on?"openai":"muse",cfg.model,cfg.language,muse_settings_openai_configured()?"true":"false",muse_asr_last_http());
-        fflush(stdout);return true;
-    }
-    if(!strcmp(line,"asr.dump")) {
-        uint8_t *wav;size_t len;
-        if(!muse_asr_snapshot(&wav,&len)) {printf("@asr_wav {\"error\":\"no recording\"}\n");fflush(stdout);return true;}
-        char encoded[513];
-        for(size_t off=0;off<len;off+=384) {
-            size_t n=len-off<384?len-off:384;
-            size_t chars=muse_hatch_base64(wav+off,n,encoded);encoded[chars]=0;
-            printf("@asr_wav {\"offset\":%u,\"bytes\":%u,\"total\":%u,\"data\":\"%s\"}\n",
-                (unsigned)off,(unsigned)n,(unsigned)len,encoded);
-            fflush(stdout);vTaskDelay(pdMS_TO_TICKS(2));
-        }
-        printf("@asr_wav {\"done\":true,\"total\":%u}\n",(unsigned)len);fflush(stdout);free(wav);return true;
-    }
-#endif
-    if (!strcmp(line,"tts.status")) {
-        muse_tts_config_t *cfg=heap_caps_malloc(sizeof(*cfg),MUSE_BIG_CAPS);
-        if(!cfg){printf("@tts {\"error\":\"out of memory\"}\n");fflush(stdout);return true;}
-        muse_settings_tts_config(cfg);
-        int http=0;
-#if CONFIG_MUSE_HATCH
-        http=muse_tts_last_http();
-#endif
-        printf("@tts {\"on\":%s,\"configured\":%s,\"provider\":\"%s\",\"region\":\"%s\",\"model\":\"%s\",\"voice\":\"%s\",\"speed\":%.2f,\"http\":%d}\n",
-            cfg->on?"true":"false",muse_settings_tts_configured()?"true":"false",cfg->qwen?"qwen":"openai",cfg->qwen_region,
-            cfg->qwen?cfg->qwen_model:cfg->model,cfg->qwen?cfg->qwen_voice:cfg->voice,cfg->speed_pct/100.0,http);
-        memset(cfg,0,sizeof(*cfg));free(cfg);
-        fflush(stdout);
         return true;
     }
     if (!strcmp(line, "status")) {

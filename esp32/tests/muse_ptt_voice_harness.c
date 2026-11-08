@@ -287,7 +287,9 @@ esp_err_t muse_audio_write(const int16_t *p,size_t n) {
 
 int main(int argc,char **argv) {
     assert(argc==2); scenario=atoi(argv[1]); s_queue=input_queue=&queue; ready=true;
+#if !CONFIG_MUSE_REALTIME_ONLY
     s_pre=calloc(PRE_CHUNKS,sizeof(*s_pre));
+#endif
     if (scenario>=20 && scenario<=21) {
         notes_mode=scenario==21; terminate_task=true; push(MUSE_PTT_DOWN); push(MUSE_PTT_UP);
         int outcome=setjmp(finish);
@@ -374,6 +376,7 @@ int main(int argc,char **argv) {
         assert(ptt_held_on_waking()); assert(clock_us>=300000 && !delivered);
         return 0;
     }
+#if !CONFIG_MUSE_REALTIME_ONLY
     if (scenario==42) {
         /* An active turn counts as activity for auto-sleep (#281): however a
          * long turn ends (the reply done, a capped REPLY INCOMPLETE, an
@@ -400,6 +403,7 @@ int main(int argc,char **argv) {
         }
         return 0;
     }
+#endif
 #if CONFIG_MUSE_REALTIME_VOICE
     if(scenario==43) {
         atomic_store(&s_call_view,MUSE_VOICE_VIEW_READY);
@@ -408,6 +412,7 @@ int main(int argc,char **argv) {
         call_input(&c);assert(c.hung_up&&ends==1&&!atomic_load(&s_call_end_requested));
         call_input(&c);assert(ends==1);return 0;
     }
+#if !CONFIG_MUSE_REALTIME_ONLY
     if(scenario==0) {
         push(MUSE_PTT_DOWN); push(MUSE_PTT_UP);
         bool delivered_note;
@@ -417,6 +422,7 @@ int main(int argc,char **argv) {
         assert(starts==1 && delivered>0 && delivered<=6 && !held && !notes);
         return 0;
     }
+#endif
     if(scenario==10) {
         atomic_store(&s_ptt_call,true);
         for(int v=MUSE_VOICE_VIEW_CONNECTING;v<=MUSE_VOICE_VIEW_ENDING;v++) {
@@ -487,6 +493,7 @@ int main(int argc,char **argv) {
         assert(!held && !muse_voice_in_call());
         return 0;
     }
+#if !CONFIG_MUSE_REALTIME_ONLY
     if(scenario>=17 && scenario<=19) {
         s_pre_fill=PRE_CHUNKS;
         for(int i=0;i<PRE_CHUNKS;i++) for(int j=0;j<MUSE_AUDIO_CHUNK;j++) s_pre[i].pcm[j]=-30000;
@@ -508,6 +515,7 @@ int main(int argc,char **argv) {
         } else assert(n==(size_t)(frame-1));
         return 0;
     }
+#endif
     if(scenario==16) {
         muse_voice_shutdown(0);
         run_call(true, 0);
@@ -553,6 +561,8 @@ int main(int argc,char **argv) {
         assert(starts==2 && !muse_voice_in_call() && !muse_voice_call_label());
     }
 #endif
+#if !CONFIG_MUSE_REALTIME_ONLY
     free(s_pre);
+#endif
     return 0;
 }

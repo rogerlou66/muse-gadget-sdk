@@ -39,8 +39,8 @@ class StopWatchPTT(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.tmp.cleanup)
         cls.binaries = {}
-        for board, realtime in ((1, 1), (0, 1), (1, 0)):
-            stage = Path(cls.tmp.name) / f'{board}-{realtime}'
+        for board, realtime, only in ((1, 1, 0), (0, 1, 0), (1, 0, 0), (0, 1, 1)):
+            stage = Path(cls.tmp.name) / f'{board}-{realtime}-{only}'
             stage.mkdir()
             # Byte-identical production units/headers. No function extraction or
             # source-string assertions: the same control flow as firmware runs.
@@ -62,6 +62,7 @@ class StopWatchPTT(unittest.TestCase):
                 '#pragma once\n'
                 f'#define CONFIG_MUSE_BOARD_M5STACK_STOPWATCH {board}\n'
                 f'#define CONFIG_MUSE_REALTIME_VOICE {realtime}\n'
+                f'#define CONFIG_MUSE_REALTIME_ONLY {only}\n'
                 '#define CONFIG_MUSE_HATCH 1\n#define CONFIG_SPIRAM 1\n'
                 '#define CONFIG_MUSE_DEFAULT_VOLUME 20\n')
             ui = (MUSE / 'muse_ui.c').read_text()
@@ -88,10 +89,10 @@ class StopWatchPTT(unittest.TestCase):
                 result = subprocess.run([*command, '-lm', '-o', str(out)], capture_output=True, text=True)
                 if result.returncode:
                     raise AssertionError(result.stdout + result.stderr)
-                cls.binaries[kind, board, realtime] = out
+                cls.binaries[kind, board, realtime, only] = out
 
-    def run_case(self, kind, scenario, board=1, realtime=1):
-        result = subprocess.run([str(self.binaries[kind, board, realtime]), str(scenario)],
+    def run_case(self, kind, scenario, board=1, realtime=1, only=0):
+        result = subprocess.run([str(self.binaries[kind, board, realtime, only]), str(scenario)],
                                 capture_output=True, text=True, timeout=10,
                                 env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0:abort_on_error=1',
                                      'UBSAN_OPTIONS': 'halt_on_error=1:print_stacktrace=1'})
@@ -99,6 +100,10 @@ class StopWatchPTT(unittest.TestCase):
 
     def test_music_hangup_signal_is_consumed_once_by_voice_owner(self):
         self.run_case('voice', 43)
+
+    def test_realtime_only_keeps_calls_without_notes_or_recording_allocations(self):
+        for scenario in (5, 16, 42, 43):
+            self.run_case('voice', scenario, board=0, realtime=1, only=1)
 
     def test_release_tail_is_sample_bounded_even_with_fast_reads(self):
         self.run_case('voice', 22)

@@ -64,8 +64,6 @@ typedef struct {
 /* Starts the connection task; it connects once Wi-Fi is up. */
 void muse_hatch_start(void);
 #if CONFIG_MUSE_HATCH
-/* Diagnostic: replay the last OpenAI WAV through Muse, reporting over USB. */
-void muse_hatch_replay_note(void);
 #endif
 
 /* The session task connects once Wi-Fi is up, and again whenever a turn needs it. */

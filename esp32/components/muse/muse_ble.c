@@ -160,16 +160,6 @@ static void run_command(char *cmd)
         }
     } else if (!strcmp(cmd, "hatch.test")) {
         muse_hatch_test();
-    } else if (!strcmp(cmd, "tts.key") || !strcmp(cmd, "tts.key+")) {
-        if (muse_settings_set_tts_key(v,cmd[7]=='+') != ESP_OK) res="error: invalid key or too long";
-    } else if (!strcmp(cmd,"tts.qwen_key") || !strcmp(cmd,"tts.qwen_key+")) {
-        if(muse_settings_set_qwen_key(v,cmd[12]=='+')!=ESP_OK)res="error: invalid key or too long";
-    } else if (!strcmp(cmd,"tts.model") || !strcmp(cmd,"tts.voice") || !strcmp(cmd,"tts.speed") || !strcmp(cmd,"tts.provider") || !strcmp(cmd,"tts.region")) {
-        if (muse_settings_set_tts_option(cmd+4,v) != ESP_OK) res="error: invalid option";
-    } else if (!strcmp(cmd,"tts.on") && parse_int(v,0,1,&n)) {
-        muse_settings_set_tts_on(n);
-    } else if (!strncmp(cmd,"asr.",4)) {
-        if (muse_settings_set_asr_option(cmd+4,v)!=ESP_OK) res="error: invalid ASR option";
     } else if (!strcmp(cmd, "test.loopback")) {
         muse_voice_request_loopback();
     } else if (!strcmp(cmd, "volume") && parse_int(v, 0, 100, &n)) {

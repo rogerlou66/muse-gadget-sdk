@@ -61,3 +61,4 @@ CONFIG_FATFS_CODEPAGE_936=y
 
 # BOX0 uses live Muse calls; middle click starts/ends, double menu, hold screen.
 CONFIG_MUSE_REALTIME_VOICE=y
+CONFIG_MUSE_REALTIME_ONLY=y

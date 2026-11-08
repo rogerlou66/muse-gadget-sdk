@@ -108,7 +108,6 @@ static inline bool muse_chat_image_wait(const char *text)
  * the release, so the WAV header gives the streaming "unknown" size. */
 void muse_hatch_wav_header(uint8_t h[MUSE_HATCH_WAV_HEADER], uint32_t rate);
 /* Complete recording: real RIFF/data lengths for file-oriented decoders. */
-void muse_hatch_wav_header_sized(uint8_t h[MUSE_HATCH_WAV_HEADER], uint32_t rate, uint32_t pcm_bytes);
 /* Writes 4 characters per 3 bytes of `in`, padded; returns the length. */
 size_t muse_hatch_base64(const uint8_t *in, size_t n, char *out);
 

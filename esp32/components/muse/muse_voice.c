@@ -37,9 +37,6 @@
 #include "muse_mem.h"
 #include "muse_music.h"
 #include "muse_settings.h"
-#if CONFIG_MUSE_HATCH
-#include "muse_asr.h"
-#endif
 #include "muse_state.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_REALTIME_VOICE
@@ -49,27 +46,19 @@
 
 static const char *TAG = "muse_voice";
 
-#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-#define MAX_SECS 30
-#else
 #define MAX_SECS 15
-#endif
 #define TAIL_FRAMES (MUSE_AUDIO_RATE * 12 / 100)   /* capture lag + poll interval, stops before the release click */
 #define MAX_FRAMES (MUSE_AUDIO_RATE * MAX_SECS)
 #define MIN_HELD_FRAMES (MUSE_AUDIO_RATE * 3 / 10)   /* shorter presses are taps, not speech */
 #if CONFIG_MUSE_BOARD_M5STACK_CARDPUTER_ADV
 #define PRE_CHUNKS 6                                   /* 120 ms; a 320 ms upload burst stalls on the ADV */
-#elif CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-/* Cover a normal click plus the 350 ms double-click decision. The idle mic
- * ring preserves opening syllables spoken immediately after the button tap. */
-#define PRE_CHUNKS 40                                  /* 800 ms */
 #else
 #define PRE_CHUNKS 16                                  /* 320 ms of audio kept from before the press */
 #endif
 #define SETTLE_CHUNKS 10   /* after Muse makes a sound, 200 ms of capture is its own tail */
 #define REST_BACKSTOP_MS 60000
 
-#if CONFIG_MUSE_HATCH
+#if CONFIG_MUSE_HATCH && !CONFIG_MUSE_REALTIME_ONLY
 /* A note recorded while Hatch is out of reach is saved in PSRAM, and goes once it's back. */
 #define HOLD_NOTES 1
 #else
@@ -159,6 +148,7 @@ const char *muse_voice_call_hint(void)
  * can start a little before the press. People start talking as they press,
  * and the power key reports the press late.
  */
+#if !CONFIG_MUSE_REALTIME_ONLY
 typedef struct {
 #if MUSE_LOW_MEM
     muse_adpcm_t start;   /* encoder state before this chunk, to decode it alone */
@@ -173,6 +163,9 @@ static size_t s_pre_next, s_pre_fill;
 #if MUSE_LOW_MEM
 static muse_adpcm_t s_pre_enc;
 #endif
+#else
+static size_t s_pre_fill;
+#endif
 static int16_t s_chunk[MUSE_AUDIO_CHUNK];
 static int s_settle;
 
@@ -180,6 +173,8 @@ static int s_settle;
  * The note being recorded (HOLD_NOTES), kept whole in case it can't go now.
  * Streaming, Hatch has had s_sent frames of it.
  */
+static volatile bool s_waiting;
+#if !CONFIG_MUSE_REALTIME_ONLY
 static int16_t *s_rec;   /* MAX_FRAMES */
 static size_t s_rec_n, s_sent;
 static bool s_live = true;
@@ -193,22 +188,27 @@ typedef struct {
 } held_note_t;
 
 static int s_held_count;
-static volatile bool s_waiting;        /* muse_voice_notes_waiting() */
 #if HOLD_NOTES
 static held_note_t s_held[HELD_MAX];   /* oldest first */
 static int64_t s_next_send_us;
 static int64_t s_send_backoff_us = RETRY_MIN_US;
 #endif
 
+#endif
+
 /* The i-th oldest pre-roll chunk, into out. */
 static void pre_get(size_t i, int16_t *out)
 {
+#if CONFIG_MUSE_REALTIME_ONLY
+    (void)i; memset(out, 0, MUSE_AUDIO_CHUNK * sizeof(*out));
+#else
     const pre_chunk_t *c = &s_pre[(s_pre_next + PRE_CHUNKS - s_pre_fill + i) % PRE_CHUNKS];
 #if MUSE_LOW_MEM
     muse_adpcm_t dec = c->start;
     muse_adpcm_decode_block(&dec, c->adpcm, MUSE_AUDIO_CHUNK, out);
 #else
     memcpy(out, c->pcm, sizeof(c->pcm));
+#endif
 #endif
 }
 
@@ -222,6 +222,8 @@ static void pre_reset(void)
 /* Stores one successful read in the pre-roll (or the isolated waking hold). */
 static void pre_put(void)
 {
+#if CONFIG_MUSE_REALTIME_ONLY
+#else
     pre_chunk_t *c = &s_pre[s_pre_next];
 #if MUSE_LOW_MEM
     c->start = s_pre_enc;
@@ -231,6 +233,7 @@ static void pre_put(void)
 #endif
     s_pre_next = (s_pre_next + 1) % PRE_CHUNKS;
     s_pre_fill = s_pre_fill < PRE_CHUNKS ? s_pre_fill + 1 : PRE_CHUNKS;
+#endif
 }
 
 /* One 20 ms idle read: feeds the pre-roll ring and the settings mic meter. */
@@ -270,6 +273,7 @@ static bool got_event(muse_ptt_t type)
     return false;
 }
 
+#if !CONFIG_MUSE_REALTIME_ONLY
 /* Level stats of a recording, gathered chunk by chunk for the log. */
 typedef struct {
     double acc;
@@ -444,7 +448,6 @@ static bool hatch_reply(bool *delivered, bool *discard)
     muse_state_set_mode(MUSE_MODE_THINKING);
     muse_state_set_caption("SENDING VOICE NOTE");   /* until there's a transcript or reply */
 #if CONFIG_MUSE_HATCH && CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-    if(muse_asr_enabled())muse_state_set_caption("TRANSCRIBING...");
 #endif
 #if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
     EXT_RAM_BSS_ATTR static int16_t buf[MUSE_AUDIO_PLAY_CHUNK];
@@ -546,6 +549,8 @@ static bool hatch_reply(bool *delivered, bool *discard)
     return false;
 }
 
+#endif
+
 static void go_idle(const char *caption)
 {
     muse_state_poke();   /* the reading clock starts when the turn ends, not at the press */
@@ -555,12 +560,14 @@ static void go_idle(const char *caption)
 }
 
 /* Errors and status stay up; a press too short to count only needs a hint. */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void too_short(void)
 {
     muse_state_set_progress(0);
     muse_state_set_mode(MUSE_MODE_IDLE);
     muse_state_set_hint("HOLD LONGER TO TALK");
 }
+#endif
 
 /* Why a press can't go to Hatch; voice notes only go there. */
 static const char *not_ready_reason(void)
@@ -650,11 +657,13 @@ static bool ptt_held_on_waking(void)
     }
 }
 
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void drop_rec(void)
 {
     free(s_rec);
     s_rec = NULL;
 }
+#endif
 
 #if HOLD_NOTES
 /* True if a press is queued, left there for the loop; releases ahead of it are dropped. */
@@ -868,6 +877,7 @@ static bool held_due(void)
  * or if it can't go now it's saved to send later. Returns true if a press
  * interrupted the reply.
  */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static bool finish_note(void)
 {
     bool delivered, discard=false;
@@ -904,11 +914,13 @@ static bool finish_note(void)
     muse_audio_chirp(0);
     return hatch_reply(&delivered,&discard);
 }
+#endif
 
 /*
  * Whether a press can record: Hatch within reach, or (HOLD_NOTES) set up
  * with room to save the note. If not, the caption says why.
  */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static bool can_record(void)
 {
     if (!muse_wifi_connected()) {
@@ -940,6 +952,7 @@ static bool can_record(void)
     }
     return true;
 }
+#endif
 
 #if CONFIG_MUSE_REALTIME_VOICE
 /* Calls: how far the speaker runs behind a write, and how long the mic stays
@@ -1306,7 +1319,7 @@ static void voice_task(void *arg)
             continue;
         }
 #if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-        muse_music_stop_owned(); /* same owner: no music/TTS writer can race this recording */
+        muse_music_stop_owned(); /* same audio owner: stop the song before the call */
 #endif
         muse_wifi_power(MUSE_WIFI_FULL);
 #if CONFIG_MUSE_REALTIME_VOICE
@@ -1322,7 +1335,7 @@ static void voice_task(void *arg)
             continue;
         }
 #endif
-#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0 && CONFIG_MUSE_REALTIME_VOICE
+#if CONFIG_MUSE_REALTIME_ONLY || (CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0 && CONFIG_MUSE_REALTIME_VOICE)
         pending_down = false;
         if (muse_voice_call_ready()) run_call(false, 0);
         else {
@@ -1333,6 +1346,7 @@ static void voice_task(void *arg)
         pre_reset();
         continue;
 #endif
+#if !CONFIG_MUSE_REALTIME_ONLY
         muse_input_clear_call_pending(s_press_mark);
         if (!can_record()) {
             pending_down = false;
@@ -1368,14 +1382,21 @@ static void voice_task(void *arg)
             muse_state_make_happy();
             go_idle("");
         }
+#endif
     }
 }
 
 esp_err_t muse_voice_start(QueueHandle_t queue)
 {
     s_queue = queue;
+#if !CONFIG_MUSE_REALTIME_ONLY
     s_pre = heap_caps_malloc(PRE_CHUNKS * sizeof(pre_chunk_t), MUSE_BIG_CAPS);
-    if (!s_pre || muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
+#endif
+    if (
+#if !CONFIG_MUSE_REALTIME_ONLY
+        !s_pre ||
+#endif
+        muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");
         return ESP_FAIL;

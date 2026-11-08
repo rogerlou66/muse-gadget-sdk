@@ -11,7 +11,8 @@ class EmptyNote(unittest.TestCase):
         src=(ROOT/'components/muse/muse_voice.c').read_text()
         wait=src[src.index('static bool wait_delivered('):src.index('/*\n * Sends the oldest saved note')]
         held=src[src.index('static bool send_held('):src.index('/*\n * Whether to send a saved note now')]
-        finish=src[src.index('static bool finish_note('):src.index('/*\n * Whether a press can record')]
+        start=src.index('static bool finish_note(')
+        finish=src[start:src.index('\n}\n', start)+3]
         code='''
 #include <assert.h>
 #include <stdint.h>

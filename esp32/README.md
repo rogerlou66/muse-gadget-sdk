@@ -255,24 +255,12 @@ things you can change:
 
 - **Shorter answers.** Ask for them in the message itself, such as "Answer in
   one sentence."
-- **Spoken answers.** This custom build supports OpenAI TTS on full-UI boards.
-  Configure `tts.key`, `tts.model` (default `gpt-4o-mini-tts`), `tts.voice`
-  (default `coral`), and `tts.on=1` using the setup command interface.
-  The USB command `>tts.status` reports configuration without revealing the key.
-  `tts.speed=1.25` requests faster speech from the cloud API; supported values
-  range from 0.25 to 4.00, saved across restarts (factory default 1.00).
-  Each finished reply is synthesized over HTTPS and streamed into the MP3
-  player. Starting a new recording interrupts playback. Speaker Off suppresses
-  synthesis; `tts.on=0` disables reply narration while keeping other sounds.
-  Playback accumulates an initial MP3 reserve; ATK BOX0 also buffers decoded
-  PCM and refills after depletion to reduce interruptions from network jitter.
-  Short completed clips and final tails play without waiting for a full reserve.
-  Missing credentials or API failures retain text captions. The API key lives
-  in device NVS, separately from the firmware binary; NVS encryption depends
-  on the board's existing configuration.
+- **Realtime speech on BOX0.** This fork enables native Muse realtime calls.
+  Independent OpenAI ASR and OpenAI/Qwen reply synthesis have been removed.
+  BOX0 no longer records, queues or uploads 30-second voice notes.
 
 Selected upstream repairs in this fork preserve the BOX0 controls, retained-supply
-shutdown, OpenAI ASR and both TTS adapters. Audio power transitions and gain/volume
+shutdown, native realtime speech and SD MP3 playback. Audio power transitions and gain/volume
 updates are serialized; failed codec/voice initialization rests the codecs.
 Noise transport uses in-place WebSocket frames and tunnel batches. Voice turns
 retain the custom bounded image/tool waits, and a capped turn with no reply now
@@ -282,8 +270,7 @@ reports an error. Sources: upstream `93eba80`, `eb413e7`, `9e49b35`, `0447d7a`,
 Further selected upstream updates (`a0f4459`, `fa07304`, `ab39b41`) add runtime
 SDK token provisioning through serial/settings, show the connected VM and
 actual paired-token state, and let `snap.py` finish slow large screenshots
-without dropping DTR on exit. BOX0 controls, power-off, independent ASR/TTS,
-30-second recording and SD MP3 playback retain their existing implementation.
+without dropping DTR on exit. BOX0 controls, power-off, realtime calls and SD MP3 playback are retained.
 
 To talk with Muse live instead (experimental), turn on "Live voice calls with
 Muse" under Muse in `idf.py menuconfig` (`CONFIG_MUSE_REALTIME_VOICE`). It's
@@ -298,6 +285,9 @@ and builds without it don't change. With it on:
   from builds without them; red stays power. Use **Settings > Sound > Voice notes** for
   the old note-and-text mode. Interrupting playback does not cancel detached
   background work, whose results may arrive later.
+- **BOX0:** single middle click starts/ends a realtime call, double click opens
+  the menu, and a long press sleeps/wakes the display. Left moves down and right
+  moves up. Recorded voice notes and independent ASR/TTS are not available.
 - **Other boards:** tap the talk button to start a call, press again to hang up;
   holding still sends a voice note. The mic is off while Muse talks, except on
   the Voice PE when its audio chip reports echo cancellation.
@@ -314,33 +304,6 @@ and builds without it don't change. With it on:
 - The Muse VM has to accept voice calls from the gadget.
 
 A few things worth knowing:
-
-This custom full-UI build can also use Qwen Cherry for narration, with the
-`qwen3-tts-flash-realtime` model, Chinese language hint and streamed 24 kHz MP3.
-Qwen credentials are stored separately from the OpenAI key used by ASR.
-Provision `tts.qwen_key` privately, set `tts.region=singapore` or `beijing`,
-then `tts.provider=qwen`, `tts.model=qwen3-tts-flash-realtime`,
-`tts.voice=Cherry` and `tts.speed=1.25`. The key must match that region;
-Virginia is not a supported endpoint for this adapter. Qwen speeds range from
-0.50 to 2.00. `tts.provider=openai` restores the saved OpenAI model/voice.
-`>tts.status` reports the selected provider without exposing either key.
-
-The custom ATK BOX0 build also supports independent OpenAI transcription.
-Set `asr.provider=openai`, `asr.model=gpt-transcribe`, and `asr.language=zh`
-through the setup command interface. It uses the same OpenAI credential as TTS,
-even when reply narration is off. A completed 16 kHz WAV is transcribed before
-its text is sent to Muse; the screen shows the recognized text while waiting
-for the reply. `asr.provider=muse` restores the original voice-note path.
-`asr.prompt` can supply relevant vocabulary context (default empty).
-An ASR failure asks for a retry, without silently forwarding a different transcript.
-If the service returns no recognized speech, the device asks you to speak again
-and discards that recording instead of repeatedly resending it as a saved note.
-
-USB diagnostics: `>asr.status` reports provider/model/language/HTTP status;
-`>asr.dump` exports the exact last ASR WAV as sequenced Base64 frames;
-`>asr.replay=muse` replays that WAV through Muse and reports the reply over USB.
-The diagnostic WAV stays in RAM and is replaced by the next completed request.
-These tools enable a comparison using the same recording, rather than two takes.
 
 - Your SDK token ships inside the firmware, or sits in NVS if you set it over
   serial, so treat it as an identifier rather than a password. If it leaks,
@@ -404,28 +367,30 @@ under their own licenses.
 
 ### BOX0 spoken reply style
 
-BOX0 prefixes each outgoing text/ASR-transcript chat message with a Chinese
+BOX0 prefixes outgoing typed chat messages with a Chinese
 request for natural spoken replies, typically two or three sentences without
-Markdown, tables or mechanical lists. Original transcription captions remain
-unchanged. Requests still target the main conversation: no `session_id` is
+Markdown, tables or mechanical lists. Requests still target the main conversation: no `session_id` is
 sent. The prefix asks for the style only on that reply and asks Muse not to
 store it as a global preference. It is a user-message instruction rather than
 a server system prompt; the prefixed message remains in shared chat history.
 
-BOX0 recording is capped at 30 seconds (including the existing pre-roll).
-A second middle-button click still ends a recording early. Other boards retain
-their 15-second recording limit. Capture and complete-WAV buffers use the
-same BOX0 duration to avoid truncating the note before transcription.
+BOX0 enables `CONFIG_MUSE_REALTIME_ONLY`: the legacy microphone backlog, WAV
+recording, saved-note and reply-MP3 buffers are excluded. Upstream voice notes
+remain available on other profiles. Provider provisioning/status commands are
+removed; existing NVS entries and local key files are left untouched and unused.
+The native call continues to use the shared main conversation and its normal
+server-side speech services. `voice.configure` still controls the real speaker
+volume through the same settings and codec lock as the menu.
 
 ### BOX0 SD music player
 
 The player reads MP3 files from `/sdcard/music` using bounded streaming
 buffers, converts mono/stereo audio to the existing speaker format and leaves
-ASR/TTS and 30-second recording unchanged. The SD Music menu uses left/down,
+native realtime calls available. The SD Music menu uses left/down,
 right/up and middle/select for songs, pause/resume, next, stop, rescan and Back.
 Selecting a song closes the menu so the middle button is available for talking.
 A raw middle press silences music before the single/double/hold decision: a
-single starts recording and closes the music file; a double opens the menu
+single starts a realtime call and closes the music file; a double opens the menu
 with music paused and available to resume. Sleeping and power-off stop music.
 At most 64 regular `.mp3`/`.MP3` files are listed; hidden files, symlinks and
 subdirectories are excluded. No files are written or formatted.

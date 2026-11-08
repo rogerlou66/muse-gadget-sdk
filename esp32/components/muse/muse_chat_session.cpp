@@ -75,14 +75,9 @@ extern "C" {
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
-#if CONFIG_MUSE_HATCH
-#include "muse_tts.h"
-#include "muse_asr.h"
-#endif
 #include "muse_wifi.h"
 }
 #include "muse_chat_priv.h"
-#include "muse_playback_gate.h"
 #include "sdkconfig.h"
 #if CONFIG_MUSE_REALTIME_VOICE
 #include "muse_voice_call_priv.h"
@@ -144,18 +139,14 @@ static const char *TAG = "muse_chat_session";
  * server transcribes it. Set to 0 to stream to /api/voice/dictation instead.
  */
 #define VOICE_NOTE 1
-#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-#define NOTE_MAX_BYTES (MIC_RATE * 2 * 30) /* Full BOX0 recording, including pre-roll. */
-#else
-#define NOTE_MAX_BYTES (MIC_RATE * 2 * 20) /* Other boards record at most 15 seconds. */
-#endif
+#define NOTE_MAX_BYTES (MIC_RATE * 2 * 20) /* Upstream voice-note boards only. */
 #define NOTE_PART_BYTES (DICT_CHUNK_BYTES / 4 * 3)   /* staged PCM that base64s to one body chunk */
 
 #define MAX_MSGS 8
 
 /* ---- Voice task <-> session task ---- */
 
-enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE, CMD_REPLAY };
+enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE };
 
 struct cmd_t {
     cmd_type_t type;
@@ -170,11 +161,10 @@ struct ev_t {
 };
 
 static QueueHandle_t s_cmds, s_events;
+#if !CONFIG_MUSE_REALTIME_ONLY
 static StreamBufferHandle_t s_in, s_out;
-static std::atomic<uint32_t> s_gen{0};
-#if CONFIG_MUSE_HATCH && CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-static std::atomic<bool> s_output_pending{false};
 #endif
+static std::atomic<uint32_t> s_gen{0};
 static std::atomic<bool> s_resting{false};
 
 /* ---- Connection ---- */
@@ -219,7 +209,7 @@ static stream_t s_streams[MAX_STREAMS];
 
 /* ---- The current turn ---- */
 
-enum phase_t : uint8_t { P_IDLE, P_LISTEN, P_WAIT_FINAL, P_WAIT_REPLY, P_WAIT_ASR };
+enum phase_t : uint8_t { P_IDLE, P_LISTEN, P_WAIT_FINAL, P_WAIT_REPLY };
 
 enum tts_t : uint8_t { TTS_NONE, TTS_QUEUED, TTS_ACTIVE, TTS_FINISHED };
 
@@ -244,16 +234,14 @@ struct turn_t {
     uint32_t gen;
     bool text;               /* typed at the console: the reply goes there, unspoken */
     bool end_requested, end_sent, chat_posted, acked;
-    bool asr_bypass;         /* same-WAV diagnostic replay through Muse */
     int64_t dict_id, chat_id;
     int64_t start_us, end_sent_us, chat_us, last_event_us, last_content_us;
     uint64_t sent24;         /* 24 kHz frames sent to dictation */
     resampler_t up;
     uint8_t *chunk;          /* DICT_CHUNK_BYTES, plus the note's tail */
     size_t chunk_len;
-    uint8_t *note;           /* staged PCM; ATK holds a complete WAV until release */
+    uint8_t *note;           /* staged PCM on upstream voice-note profiles */
     size_t note_len;
-    size_t note_off;         /* complete-WAV upload cursor on ATK */
     size_t pcm_bytes;        /* the note so far */
     size_t body_sent;
     char *texts;             /* MAX_MSGS * TEXT_MAX: each message's text */
@@ -269,8 +257,6 @@ struct turn_t {
     bool image_requested;
     /* TTS */
     int tts_msg;             /* message being fetched (or shown, speaker off), or -1 */
-    uint32_t tts_ticket;     /* async cloud fetch, separate from the Muse socket */
-    uint32_t asr_ticket;
     bool silent;             /* speaker off: tts_msg is paced by silence, not fetched */
     uint8_t *mp3;            /* MP3_BUF */
     size_t mp3_len;
@@ -292,10 +278,14 @@ static int64_t s_marks[M_COUNT];
 static char s_reply_shown[EV_TEXT];   /* the pre-speech caption last sent */
 
 static void mark(mark_t m);
+#if !CONFIG_MUSE_REALTIME_ONLY
 static bool open_note(void);
+#endif
 static void log_marks(void);
+#if !CONFIG_MUSE_REALTIME_ONLY
 static int16_t *s_pcm;       /* MINIMP3_MAX_SAMPLES_PER_FRAME */
 static int16_t *s_pcm16;     /* resampled output */
+#endif
 static int64_t s_last_seq;
 
 static int64_t now_us(void)
@@ -1001,19 +991,10 @@ static void turn_reset_streams(void)
 
 static void turn_finish(void)
 {
-#if CONFIG_MUSE_HATCH && CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-    s_output_pending=false;
-#endif
-#if CONFIG_MUSE_HATCH
-    muse_tts_cancel(s_turn.tts_ticket);
-    muse_asr_cancel(s_turn.asr_ticket);
-#endif
     turn_reset_streams();
     s_turn.phase = P_IDLE;
     s_turn.dict_id = s_turn.chat_id = 0;
     s_turn.tts_msg = -1;
-    s_turn.tts_ticket = 0;
-    s_turn.asr_ticket = 0;
     s_turn.silent = false;
     s_turn.mp3_len = 0;
 }
@@ -1062,7 +1043,9 @@ static bool turn_start(uint32_t gen, bool text)
     memset(s_marks, 0, sizeof(s_marks));
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
+#if !CONFIG_MUSE_REALTIME_ONLY
     resampler_init(&s_turn.up, MIC_RATE, DICT_RATE);
+#endif
     if (!ensure_connected()) {
         turn_fail(muse_hatch_configured() ? "CAN'T REACH MUSE" : "MUSE NOT SET UP");
         return false;
@@ -1072,6 +1055,10 @@ static bool turn_start(uint32_t gen, bool text)
 
 static void turn_begin(uint32_t gen)
 {
+#if CONFIG_MUSE_REALTIME_ONLY
+    (void)gen;
+    emit(MUSE_HATCH_EV_ERROR, "USE A REALTIME CALL");
+#else
     if (!turn_start(gen, false)) {
         return;
     }
@@ -1093,9 +1080,11 @@ static void turn_begin(uint32_t gen)
         return;
     }
     s_turn.phase = P_LISTEN;
+#endif
 }
 
 /* Moves mic audio to the dictation stream, paced like a live mic. */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static bool pump_mic(void)
 {
     static int16_t in[MIC_RATE / 50];
@@ -1146,10 +1135,12 @@ static bool pump_mic(void)
     }
     return true;
 }
+#endif
 
 /* ---- Turn: voice note ---- */
 
 /* Base64-encodes the staged PCM into one body chunk; `last` pads and closes the request. */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static bool send_note_part(bool last)
 {
     char *o = reinterpret_cast<char *>(s_turn.chunk);
@@ -1163,20 +1154,16 @@ static bool send_note_part(bool last)
     s_turn.note_len = 0;
     return send_body(s_turn.chat_id, s_turn.chunk, n, last);
 }
+#endif
 
 /*
  * Most boards stream the chat request during recording, using unknown WAV
  * lengths. The ATK instead buffers the recording and opens the request after
  * release with exact RIFF/data sizes for file-decoder compatibility.
  */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static bool open_note(void)
 {
-#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-    /* The ATK has enough PSRAM to finalize a conventional WAV before upload.
-     * Do not start a chat request until the recording's actual size is known. */
-    s_turn.note_len = MUSE_HATCH_WAV_HEADER;
-    return true;
-#else
     s_turn.chat_id = open_stream(K_CHAT, "POST", "/chat/stream", "application/json", nullptr, nullptr, false);
     if (!s_turn.chat_id) {
         return false;
@@ -1188,66 +1175,13 @@ static bool open_note(void)
     muse_hatch_wav_header(s_turn.note, MIC_RATE);
     s_turn.note_len = MUSE_HATCH_WAV_HEADER;
     return true;
-#endif
 }
+#endif
 
 /* Moves the mic into the note request; on release, sends the rest and waits for the reply. */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static bool record_note(void)
 {
-#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-    if (!s_turn.chat_id) {
-        for (;;) {
-            size_t room = (NOTE_MAX_BYTES - s_turn.pcm_bytes) & ~(size_t)1;
-            size_t got = room ? xStreamBufferReceive(s_in, s_turn.note + s_turn.note_len, room, 0) : 0;
-            if (!got) break;
-            s_turn.note_len += got;
-            s_turn.pcm_bytes += got;
-        }
-        if (!s_turn.end_requested && s_turn.pcm_bytes < NOTE_MAX_BYTES) return true;
-        mark(M_RELEASE);
-        if (s_turn.pcm_bytes < MIC_RATE * 2 * 3 / 10) {
-            turn_fail("DIDN'T CATCH THAT");
-            return true;
-        }
-        muse_hatch_wav_header_sized(s_turn.note, MIC_RATE, s_turn.pcm_bytes);
-#if CONFIG_MUSE_HATCH
-        if(muse_asr_enabled() && !s_turn.asr_bypass) {
-            s_turn.asr_ticket=muse_asr_start(s_turn.note,s_turn.note_len);
-            if(!s_turn.asr_ticket) {turn_fail("ASR START FAILED - RETRY");return true;}
-            s_turn.phase=P_WAIT_ASR;
-            ESP_LOGI(TAG,"independent ASR queued: %.2fs",s_turn.pcm_bytes/(double)(MIC_RATE*2));
-            return true;
-        }
-#endif
-        s_turn.chat_id = open_stream(K_CHAT, "POST", "/chat/stream", "application/json", nullptr, nullptr, false);
-        if (!s_turn.chat_id) return false;
-        s_turn.body_sent = sizeof(MUSE_HATCH_NOTE_HEAD) - 1;
-        if (!send_body(s_turn.chat_id, reinterpret_cast<const uint8_t *>(MUSE_HATCH_NOTE_HEAD),
-                       sizeof(MUSE_HATCH_NOTE_HEAD) - 1, false)) return false;
-    }
-    /* One chunk per socket poll: continue processing flow control, cancellation
-     * and keepalives instead of blocking on the entire recording. */
-    size_t n = s_turn.note_len - s_turn.note_off;
-    if (n > NOTE_PART_BYTES) n = NOTE_PART_BYTES;
-    bool last = s_turn.note_off + n == s_turn.note_len;
-    char *out = reinterpret_cast<char *>(s_turn.chunk);
-    size_t encoded = muse_hatch_base64(s_turn.note + s_turn.note_off, n, out);
-    if (last) {
-        memcpy(out + encoded, MUSE_HATCH_NOTE_TAIL, sizeof(MUSE_HATCH_NOTE_TAIL) - 1);
-        encoded += sizeof(MUSE_HATCH_NOTE_TAIL) - 1;
-    }
-    if (!send_body(s_turn.chat_id, s_turn.chunk, encoded, last)) return false;
-    s_turn.body_sent += encoded;
-    s_turn.note_off += n;
-    if (!last) return true;
-    ESP_LOGI(TAG, "voice note complete WAV: %.2fs, %u PCM bytes, %u byte request",
-             (double)s_turn.pcm_bytes / (MIC_RATE * 2), (unsigned)s_turn.pcm_bytes, (unsigned)s_turn.body_sent);
-    mark(M_SENT);
-    s_turn.chat_posted = true;
-    s_turn.chat_us = s_turn.last_event_us = now_us();
-    s_turn.phase = P_WAIT_REPLY;
-    return true;
-#else
     for (;;) {
         size_t room = NOTE_PART_BYTES - s_turn.note_len;
         size_t left = NOTE_MAX_BYTES - s_turn.pcm_bytes;
@@ -1280,8 +1214,8 @@ static bool record_note(void)
     s_turn.chat_us = s_turn.last_event_us = now_us();
     s_turn.phase = P_WAIT_REPLY;
     return true;
-#endif
 }
+#endif
 
 /*
  * Posts `text` to the chat and waits for the reply. A long message goes up in
@@ -1344,6 +1278,7 @@ static void send_chat(const char *text, const char *modality, bool spoken)
     s_turn.phase = P_WAIT_REPLY;
 }
 
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void post_chat(const char *text)
 {
     if (s_turn.chat_posted) {
@@ -1363,32 +1298,8 @@ static void post_chat(const char *text)
     emit(MUSE_HATCH_EV_HEARD, text);
     send_chat(text, "text", true);
 }
-
-static void poll_asr(void)
-{
-#if CONFIG_MUSE_HATCH
-    if(s_turn.phase!=P_WAIT_ASR || !s_turn.asr_ticket) return;
-    if(s_turn.gen!=s_gen.load()) {turn_finish();return;}
-    EXT_RAM_BSS_ATTR static char transcript[MUSE_ASR_TEXT_MAX];
-    int status=muse_asr_poll(s_turn.asr_ticket,transcript,sizeof(transcript));
-    if(!status)return;
-    muse_asr_cancel(s_turn.asr_ticket);
-    s_turn.asr_ticket=0;
-    if(status==MUSE_ASR_NO_SPEECH) {
-        ESP_LOGI(TAG,"ASR returned no speech; requesting a new recording");
-        emit(MUSE_HATCH_EV_INPUT_INVALID,"没听清，请重说");
-        turn_finish();return;
-    }
-    if(status<0) {
-        ESP_LOGW(TAG,"independent ASR failed (HTTP %d)",muse_asr_last_http());
-        turn_fail("ASR FAILED - PLEASE RETRY");
-        return;
-    }
-    /* Diagnostic USB frame and screen HEARD event precede the Muse request. */
-    muse_hatch_console("asr",transcript,"\"provider\":\"openai\",\"http\":%d",muse_asr_last_http());
-    post_chat(transcript);
 #endif
-}
+
 
 /* A typed turn: the text goes straight to the chat. */
 static void text_begin(const char *text)
@@ -1404,6 +1315,7 @@ static void text_begin(const char *text)
     }
 }
 
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void on_dictation_line(cJSON *line)
 {
     const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(line, "type"));
@@ -1433,7 +1345,9 @@ static void on_dictation_line(cJSON *line)
         cJSON_free(s);
     }
 }
+#endif
 
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void on_dictation_end(bool ok)
 {
     s_turn.dict_id = 0;
@@ -1448,6 +1362,7 @@ static void on_dictation_end(bool ok)
     snprintf(heard, sizeof(heard), "%s%s%s", s_turn.committed, s_turn.committed[0] ? " " : "", s_turn.partial);
     post_chat(heard);
 }
+#endif
 
 /* ---- Turn: reply ---- */
 
@@ -1706,6 +1621,7 @@ static void on_chat_ack(stream_t *s)
 
 /* ---- Turn: speech ---- */
 
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void start_tts(void)
 {
     if (s_turn.tts_msg >= 0) {
@@ -1716,41 +1632,38 @@ static void start_tts(void)
         if (m.tts != TTS_QUEUED) {
             continue;
         }
-        /* Cloud synthesis runs on its own HTTPS worker. This task owns MP3
-         * decoding, caption timing and cancellation; an unconfigured/off
-         * speaker or a failed fetch keeps the existing text-only path. */
+        /*
+         * Replies are text, shown at reading pace: silence in place of speech
+         * paces the captions and ends the turn. To speak them instead, send
+         * the message's text (s_turn.texts + i * TEXT_MAX, if texts was
+         * allocated; up to TEXT_MAX - 1 bytes) to a TTS API of your choice and
+         * play the MP3 it returns. In place of the silence below: keep
+         * m.tts = TTS_ACTIVE and s_turn.tts_msg = i, set s_turn.silent = false,
+         * m.pcm_start = s_turn.pcm_out, m.pcm_frames = 0, s_turn.mp3_len = 0,
+         * s_turn.mp3_ended = false, s_turn.kbps = 0, s_turn.down_rate = 0 and
+         * mp3dec_init(&s_turn.dec). Then, on this task, pass the MP3 to
+         * tts_data() as it arrives (it buffers up to MP3_BUF and drops the
+         * rest, so hold off while it's full) and set s_turn.mp3_ended at the
+         * end. decode() plays it at the speaker's volume, captions following,
+         * and finishes the message once it's drained.
+         */
         m.pcm_start = s_turn.pcm_out;
-        /* Paced to the text kept: a reply longer than TEXT_MAX shows what was
-         * kept at reading pace, not stretched over the whole reply's time. */
+        /* Paced to the text kept: a reply longer than CAPTION_TEXT shows what
+         * was kept at reading pace, not stretched over the whole reply's time
+         * (the Watcher keeps the rest for review). */
         size_t shown = s_turn.texts ? strlen(s_turn.texts + i * TEXT_MAX) : m.len;
         m.pcm_frames = (uint32_t)(shown * PLAY_RATE / TEXT_CHARS_PER_S);
         m.tts = TTS_ACTIVE;
         s_turn.tts_msg = i;
         s_turn.silent = true;
-#if CONFIG_MUSE_HATCH
-        if (muse_settings_speaker_on() && muse_tts_ready() && s_turn.texts) {
-            s_turn.tts_ticket=muse_tts_start(s_turn.texts+i*TEXT_MAX);
-            if (s_turn.tts_ticket) {
-#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-                s_output_pending=true;
-#endif
-                s_turn.silent=false;
-                m.pcm_frames=0;
-                s_turn.mp3_len=0;
-                s_turn.mp3_ended=false;
-                s_turn.kbps=s_turn.down_rate=0;
-                mp3dec_init(&s_turn.dec);
-                mark(M_TTS);
-                ESP_LOGI(TAG,"cloud speech queued (%u chars)",(unsigned)m.len);
-            }
-        }
-#endif
         ESP_LOGI(TAG, "showing message %s (%u chars)", m.id, (unsigned)m.len);
         show_reply_start(m);
         return;
     }
 }
+#endif
 
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void tts_data(const uint8_t *data, size_t len)
 {
     if (s_turn.mp3_len + len > MP3_BUF) {
@@ -1761,45 +1674,11 @@ static void tts_data(const uint8_t *data, size_t len)
     memcpy(s_turn.mp3 + s_turn.mp3_len, data, len);
     s_turn.mp3_len += len;
 }
-
-static void cloud_tts_fallback(void)
-{
-#if CONFIG_MUSE_HATCH && CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-    s_output_pending=false;
 #endif
-    msg_t &m=s_turn.msgs[s_turn.tts_msg];
-#if CONFIG_MUSE_HATCH
-    muse_tts_cancel(s_turn.tts_ticket);
-#endif
-    s_turn.tts_ticket=0;
-    s_turn.mp3_len=0;
-    s_turn.silent=true;
-    m.pcm_start=s_turn.pcm_out;
-    m.pcm_frames=(uint32_t)(m.len*PLAY_RATE/TEXT_CHARS_PER_S);
-    show_reply_start(m);
-}
 
-static void poll_cloud_tts(void)
-{
-#if CONFIG_MUSE_HATCH
-    if (!s_turn.tts_ticket || s_turn.tts_msg<0) return;
-    if (!muse_settings_speaker_on() || !muse_tts_ready()) {cloud_tts_fallback();return;}
-    size_t room=MP3_BUF-s_turn.mp3_len;
-    if (!room) return; /* backpressure: let decoding drain before pulling more */
-    EXT_RAM_BSS_ATTR static uint8_t incoming[8192];
-    int state;
-    size_t n=muse_tts_read(s_turn.tts_ticket,incoming,room<sizeof(incoming)?room:sizeof(incoming),&state);
-    if (n) tts_data(incoming,n);
-    if (state==MUSE_TTS_DONE) {
-        s_turn.mp3_ended=true;
-        s_turn.tts_ticket=0;
-    } else if (state<0) {
-        ESP_LOGW(TAG,"cloud speech unavailable (HTTP %d); keeping text",muse_tts_last_http());
-        cloud_tts_fallback();
-    }
-#endif
-}
 
+
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void tts_end(stream_t *s, bool ok)
 {
     int i = s->msg;
@@ -1814,8 +1693,10 @@ static void tts_end(stream_t *s, bool ok)
         s_turn.tts_msg = -1;
     }
 }
+#endif
 
 /* Speaker off: queues the shown message's silence while the reply buffer has room. */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void pace_silently(void)
 {
     static const int16_t zeros[256] = {};
@@ -1832,8 +1713,10 @@ static void pace_silently(void)
         s_turn.silent = false;
     }
 }
+#endif
 
 /* Decodes buffered MP3 while the reply buffer has room. */
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void decode(void)
 {
     if (s_turn.tts_msg < 0) {
@@ -1851,7 +1734,7 @@ static void decode(void)
     size_t hold = s_turn.mp3_ended ? 0 : MP3_HOLD;
     size_t off = 0;
     while (s_turn.mp3_len - off > hold &&
-           xStreamBufferSpacesAvailable(s_out) >= PLAY_MAX_FRAME * sizeof(int16_t)) {
+           xStreamBufferSpacesAvailable(s_out) >= (MINIMP3_MAX_SAMPLES_PER_FRAME / 2 + 8) * sizeof(int16_t)) {
         mp3dec_frame_info_t info;
         int samples = mp3dec_decode_frame(&s_turn.dec, s_turn.mp3 + off, s_turn.mp3_len - off, s_pcm, &info);
         if (!info.frame_bytes) {
@@ -1892,27 +1775,22 @@ static void decode(void)
         uint32_t rest = (uint32_t)((uint64_t)s_turn.mp3_len * 8 * PLAY_RATE / (s_turn.kbps * 1000));
         m.pcm_frames = s_turn.pcm_out - m.pcm_start + rest;
     }
-    if (s_turn.mp3_ended && !s_turn.mp3_len && !s_turn.kbps) {
-        ESP_LOGW(TAG,"cloud speech had no decodable frames; keeping text");
-        cloud_tts_fallback();
-        return;
-    }
     if (s_turn.mp3_ended && !s_turn.mp3_len) {
-#if CONFIG_MUSE_HATCH && CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-        s_output_pending=false;
-#endif
         m.pcm_frames = s_turn.pcm_out - m.pcm_start;
         m.tts = TTS_FINISHED;
         s_turn.tts_msg = -1;
     }
 }
+#endif
 
 /* Ends the turn once the reply is complete and spoken, or on timeouts. */
 static void check_turn(void)
 {
     int64_t t = now_us();
     if (s_turn.phase == P_WAIT_FINAL && t - s_turn.end_sent_us > FINAL_TIMEOUT_US) {
+#if !CONFIG_MUSE_REALTIME_ONLY
         on_dictation_end(true);
+#endif
         return;
     }
     if (s_turn.phase != P_WAIT_REPLY) {
@@ -2013,7 +1891,9 @@ static void stream_data(stream_t *s, ConstByteSpan data)
         feed_lines(s, data.data(), data.size(), on_event);
         break;
     case K_DICT:
+#if !CONFIG_MUSE_REALTIME_ONLY
         feed_lines(s, data.data(), data.size(), on_dictation_line);
+#endif
         break;
     case K_CHAT: {
         size_t take = data.size() < s->cap - 1 - s->len ? data.size() : s->cap - 1 - s->len;
@@ -2022,9 +1902,11 @@ static void stream_data(stream_t *s, ConstByteSpan data)
         break;
     }
     case K_TTS:
+#if !CONFIG_MUSE_REALTIME_ONLY
         if (s->msg == s_turn.tts_msg) {
             tts_data(data.data(), data.size());
         }
+#endif
         break;
 #if CONFIG_MUSE_REALTIME_VOICE
     case K_CALL:
@@ -2046,7 +1928,9 @@ static bool stream_end(stream_t *s, bool ok)
         return false;
     case K_DICT:
         close_stream(s);
+#if !CONFIG_MUSE_REALTIME_ONLY
         on_dictation_end(ok);
+#endif
         break;
     case K_CHAT:
         if (ok) {
@@ -2059,7 +1943,9 @@ static bool stream_end(stream_t *s, bool ok)
         }
         break;
     case K_TTS:
+#if !CONFIG_MUSE_REALTIME_ONLY
         tts_end(s, ok);
+#endif
         break;
 #if CONFIG_MUSE_REALTIME_VOICE
     case K_CALL:
@@ -2250,21 +2136,6 @@ static void handle(const cmd_t &cmd)
         break;
     case CMD_WAKE:   /* only ends hatch_task's resting wait */
         break;
-    case CMD_REPLAY:
-#if CONFIG_MUSE_HATCH && CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-        if(s_turn.phase!=P_IDLE) {
-            muse_hatch_console("error","BUSY",nullptr);
-        } else if(turn_start(0,true)) {
-            /* The sized header carries the length; snapshot validation bounds it. */
-            const uint8_t *wav=reinterpret_cast<const uint8_t *>(cmd.text);
-            size_t len=44+(uint32_t)wav[40]+((uint32_t)wav[41]<<8)+((uint32_t)wav[42]<<16)+((uint32_t)wav[43]<<24);
-            memcpy(s_turn.note,wav,len);
-            s_turn.note_len=len;s_turn.pcm_bytes=len-44;
-            s_turn.asr_bypass=true;s_turn.end_requested=true;s_turn.phase=P_LISTEN;
-        }
-#endif
-        free(cmd.text);
-        break;
     }
 }
 
@@ -2320,6 +2191,7 @@ static void hatch_task(void *arg)
             drop_connection("receive failed");
             continue;
         }
+#if !CONFIG_MUSE_REALTIME_ONLY
         bool sent = true;
         if (s_turn.phase == P_LISTEN) {
             sent = VOICE_NOTE ? record_note() : pump_mic();
@@ -2330,10 +2202,9 @@ static void hatch_task(void *arg)
         }
         if (s_turn.phase == P_WAIT_REPLY) {
             start_tts();
-            poll_cloud_tts();
             decode();
         }
-        poll_asr();
+#endif
         if (!s_connected) {
             continue;
         }
@@ -2365,12 +2236,16 @@ static void post(cmd_type_t type, uint32_t gen)
     }
 }
 
+#if !CONFIG_MUSE_REALTIME_ONLY
 static void drain_out(void)
 {
+#if !CONFIG_MUSE_REALTIME_ONLY
     static int16_t junk[256];
     while (xStreamBufferReceive(s_out, junk, sizeof(junk), 0)) {
     }
+#endif
 }
+#endif
 
 extern "C" void muse_hatch_start(void)
 {
@@ -2394,30 +2269,29 @@ extern "C" void muse_hatch_start(void)
     /* A byte over: a stream buffer made with caps keeps one back (FreeRTOS's
      * static buffers do), and with an odd room left, a send that fills it stops
      * halfway through a sample. */
+    s_turn.texts = static_cast<char *>(psram_alloc(MAX_MSGS * TEXT_MAX));   /* text/caption storage */
+#if !CONFIG_MUSE_REALTIME_ONLY
     s_in = xStreamBufferCreateWithCaps(IN_BYTES + 1, 1, MALLOC_CAP_SPIRAM);
     s_out = xStreamBufferCreateWithCaps(OUT_BYTES, 1, MALLOC_CAP_SPIRAM);
     s_turn.chunk = static_cast<uint8_t *>(psram_alloc(DICT_CHUNK_BYTES + sizeof(MUSE_HATCH_NOTE_TAIL)));
     s_turn.mp3 = static_cast<uint8_t *>(psram_alloc(MP3_BUF));
-    s_turn.note = VOICE_NOTE ? static_cast<uint8_t *>(psram_alloc(
-#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-        NOTE_MAX_BYTES + MUSE_HATCH_WAV_HEADER
-#else
-        NOTE_PART_BYTES
-#endif
-        )) : nullptr;
-    s_turn.texts = static_cast<char *>(psram_alloc(MAX_MSGS * TEXT_MAX));   /* captions just stay untimed without it */
+    s_turn.note = VOICE_NOTE ? static_cast<uint8_t *>(psram_alloc(NOTE_PART_BYTES)) : nullptr;
     s_pcm = static_cast<int16_t *>(psram_alloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(int16_t)));
     s_pcm16 = static_cast<int16_t *>(psram_alloc(PLAY_MAX_FRAME * sizeof(int16_t)));
+#endif
     for (auto &s : s_streams) {
         s.line = static_cast<char *>(psram_alloc(NDJSON_LINE_MAX));
         s.cap = NDJSON_LINE_MAX;
     }
     s_turn.tts_msg = -1;
 #if CONFIG_MUSE_REALTIME_VOICE
-    muse_voice_call_init();   /* calls stay unavailable if it fails; notes still work */
+    muse_voice_call_init();   /* failure leaves calls unavailable, without changing typed chat */
 #endif
     /* Stack in PSRAM: TLS, Noise and the MP3 decoder (~16 KB of scratch) all run here. */
-    if (!s_cmds || !s_events || !s_in || !s_out || !s_turn.chunk || !s_turn.mp3 || (VOICE_NOTE && !s_turn.note) || !s_pcm || !s_pcm16 ||
+    if (!s_cmds || !s_events ||
+#if !CONFIG_MUSE_REALTIME_ONLY
+        !s_in || !s_out || !s_turn.chunk || !s_turn.mp3 || (VOICE_NOTE && !s_turn.note) || !s_pcm || !s_pcm16 ||
+#endif
         xTaskCreatePinnedToCoreWithCaps(hatch_task, "muse_chat", 48 * 1024, nullptr, 5, nullptr, 0,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "start failed");
@@ -2425,20 +2299,6 @@ extern "C" void muse_hatch_start(void)
 }
 
 #if CONFIG_MUSE_HATCH
-extern "C" void muse_hatch_replay_note(void)
-{
-#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-    uint8_t *wav;size_t len;
-    if(!s_cmds || !muse_asr_snapshot(&wav,&len)) {
-        muse_hatch_console("error","NO RECORDING",nullptr);return;
-    }
-    if(!muse_asr_valid_wav(wav,len)) {free(wav);muse_hatch_console("error","INVALID WAV",nullptr);return;}
-    cmd_t cmd{CMD_REPLAY,0,reinterpret_cast<char *>(wav)};
-    if(xQueueSend(s_cmds,&cmd,0)!=pdTRUE) {free(wav);muse_hatch_console("error","BUSY",nullptr);}
-#else
-    muse_hatch_console("error","THIS BOARD HAS NO WAV REPLAY",nullptr);
-#endif
-}
 #endif
 
 extern "C" void muse_hatch_chat_connect(void)
@@ -2458,38 +2318,53 @@ extern "C" bool muse_hatch_ready(void)
 
 extern "C" void muse_hatch_turn_begin(void)
 {
+#if !CONFIG_MUSE_REALTIME_ONLY
     uint32_t gen = ++s_gen;
     xStreamBufferReset(s_in);
     drain_out();
     post(CMD_BEGIN, gen);
+#endif
 }
 
 extern "C" void muse_hatch_turn_audio(const int16_t *pcm, size_t frames)
 {
+#if CONFIG_MUSE_REALTIME_ONLY
+    (void)pcm; (void)frames;
+#else
     size_t bytes = frames * sizeof(int16_t);
     if (xStreamBufferSend(s_in, pcm, bytes, 0) != bytes) {
         ESP_LOGW(TAG, "mic backlog full, dropped audio");
     }
+#endif
 }
 
 /* Both ends move whole frames, and the buffer holds a whole number of them (see
  * its creation), so a send that fills it never splits one. */
 extern "C" size_t muse_hatch_turn_audio_wait(const int16_t *pcm, size_t frames, int wait_ms)
 {
+#if CONFIG_MUSE_REALTIME_ONLY
+    (void)pcm; (void)frames;
+    (void)wait_ms; return 0;
+#else
     return xStreamBufferSend(s_in, pcm, frames * sizeof(int16_t), pdMS_TO_TICKS(wait_ms)) / sizeof(int16_t);
+#endif
 }
 
 extern "C" void muse_hatch_turn_end(void)
 {
+#if !CONFIG_MUSE_REALTIME_ONLY
     post(CMD_END, s_gen.load());
+#endif
 }
 
 extern "C" void muse_hatch_turn_cancel(void)
 {
+#if !CONFIG_MUSE_REALTIME_ONLY
     uint32_t gen = s_gen.load();
     ++s_gen;
     post(CMD_CANCEL, gen);
     drain_out();
+#endif
 }
 
 extern "C" void muse_hatch_set_resting(bool resting)
@@ -2604,17 +2479,12 @@ extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
 
 extern "C" size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms)
 {
-#if CONFIG_MUSE_HATCH && CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
-    static muse_playback_gate_t gate;
-    unsigned before=gate.refills;
-    size_t available=xStreamBufferBytesAvailable(s_out)/sizeof(int16_t);
-    if(!muse_playback_ready(&gate,s_gen.load(),available,s_output_pending.load(),PLAY_RATE)) {
-        if(gate.refills!=before) ESP_LOGW(TAG,"playback buffer refill %u",gate.refills);
-        vTaskDelay(pdMS_TO_TICKS(wait_ms>0?wait_ms:2));
-        return 0;
-    }
-#endif
+#if CONFIG_MUSE_REALTIME_ONLY
+    (void)pcm; (void)frames;
+    (void)wait_ms; return 0;
+#else
     return xStreamBufferReceive(s_out, pcm, frames * sizeof(int16_t), pdMS_TO_TICKS(wait_ms)) / sizeof(int16_t);
+#endif
 }
 
 /* Bench test: decodes the embedded test_reply.mp3 exactly as a reply is decoded. */
@@ -2634,7 +2504,7 @@ static size_t mp3_selftest(int16_t **pcm_out)
         return 0;
     }
     mp3dec_init(dec);
-    resampler_t rs;
+    resampler_t rs{};
     int rate = 0, frames = 0;
     size_t off = 0, n = 0;
     int64_t t0 = now_us();

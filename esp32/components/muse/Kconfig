@@ -257,6 +257,15 @@ menu "Muse"
 
 if MUSE_REALTIME_VOICE
 
+    config MUSE_REALTIME_ONLY
+        bool "Realtime calls only (no recorded voice notes)"
+        default y if MUSE_BOARD_ATK_DNESP32S3_BOX0
+        help
+            Exclude the legacy recorded-note/dictation and reply-audio path.
+            Keep realtime calls, typed chat, audio diagnostics and SD music.
+            BOX0 uses this profile to avoid allocating unused WAV, pre-roll,
+            microphone-backlog and legacy reply playback buffers.
+
     config MUSE_REALTIME_VOICE_APP_ID
         string "App ID the voice session connects as"
         default "hatch-web"

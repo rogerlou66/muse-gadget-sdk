@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class DeviceOrigin(unittest.TestCase):
     def test_chat_body_device_identity_and_optional_fallback(self):
         src = (ROOT / 'components/muse/muse_chat_session.cpp').read_text()
-        fn = src[src.index('static void send_chat('):src.index('static void post_chat(')]
+        start = src.index('static void send_chat(')
+        fn = src[start:src.index('\n}\n', start)+3]
         jsondir = ROOT / 'managed_components/espressif__cjson/cJSON'
         code = r'''
 #include <cassert>
