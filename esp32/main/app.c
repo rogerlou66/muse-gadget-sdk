@@ -1959,7 +1959,11 @@ static cJSON *on_ws_command(
         return async;
     }
 #endif
-#if CONFIG_HOMEHUB_VOICE
+#if CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
+    if (strcmp(command, "voice.configure") == 0) {
+        return muse_glue_voice_configure(params);
+    }
+#elif CONFIG_HOMEHUB_VOICE
     if (strcmp(command, "voice.configure") == 0) {
         return voice_configure_command(params);
     }

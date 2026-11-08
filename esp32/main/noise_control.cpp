@@ -1472,7 +1472,7 @@ static char *build_register_json(void) {
     }
 #endif
 
-#if CONFIG_HOMEHUB_VOICE
+#if CONFIG_HOMEHUB_VOICE || CONFIG_MUSE_BOARD_ATK_DNESP32S3_BOX0
     cJSON *volume_optional = cJSON_CreateObject();
     cJSON *volume_param = cJSON_CreateObject();
     cJSON_AddStringToObject(volume_param, "type", "integer");

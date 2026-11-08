@@ -51,6 +51,30 @@
 
 static const char *TAG = "link.muse";
 
+cJSON *muse_glue_voice_configure(cJSON *params)
+{
+    cJSON *volume = cJSON_GetObjectItemCaseSensitive(params, "volume");
+    bool invalid = (params && !cJSON_IsObject(params)) ||
+        (volume && (!cJSON_IsNumber(volume) || volume->valuedouble < 0 ||
+                    volume->valuedouble > 100 || volume->valuedouble != volume->valueint));
+    cJSON *result = cJSON_CreateObject();
+    if (invalid) {
+        cJSON_AddBoolToObject(result, "ok", false);
+        cJSON *error = cJSON_AddObjectToObject(result, "error");
+        cJSON_AddStringToObject(error, "code", "invalid_params");
+        cJSON_AddStringToObject(error, "message", "volume must be an integer from 0 to 100");
+        ESP_LOGW(TAG, "voice.configure rejected invalid volume");
+        return result;
+    }
+    if (volume) muse_settings_set_volume(volume->valueint);
+    int current = muse_settings_volume();
+    ESP_LOGI(TAG, "voice.configure: %s volume=%d", volume ? "set" : "query", current);
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddNumberToObject(result, "volume", current);
+    cJSON_AddBoolToObject(result, "speaker", muse_settings_speaker_on());
+    return result;
+}
+
 #define BIT_STORAGE     BIT0    // NVS + identity ready: Muse may start
 #define BIT_LINK        BIT1    // boot connect done: Muse may use the radios
 #define BIT_MUSE        BIT2    // Muse settings loaded

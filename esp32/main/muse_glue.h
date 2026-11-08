@@ -17,6 +17,7 @@
 #pragma once
 
 #include "led_status.h"
+#include "cJSON.h"
 
 // Runs the UI (components/muse) on top of Home Link: Link owns Wi-Fi, BLE,
 // setup credentials and the Hatch account; the UI is the avatar, voice and
@@ -30,3 +31,6 @@ void muse_glue_storage_ready(void);
 void muse_glue_link_ready(void);
 // The LED backend for Muse builds: Link's status, shown on the display.
 void muse_glue_led_state(led_state_t state);
+
+// BOX0's Link voice.configure command uses the Muse UI/audio settings.
+cJSON *muse_glue_voice_configure(cJSON *params);
